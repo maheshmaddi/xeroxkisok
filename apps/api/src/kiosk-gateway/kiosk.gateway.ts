@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import {
   ConnectedSocket,
   MessageBody,
@@ -13,7 +13,8 @@ import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { STORAGE } from '../storage/storage.constants';
 import type { StorageService } from '../storage/storage.types';
-import { Inject } from '@nestjs/common';
+import { FileCleanupService } from '../storage/file-cleanup.service';
+import { RefundsService } from '../payments/refunds.service';
 
 const OTP_MAX_ATTEMPTS = 5;
 
@@ -31,6 +32,8 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(STORAGE) private readonly storage: StorageService,
+    private readonly cleanup: FileCleanupService,
+    private readonly refunds: RefundsService,
   ) {}
 
   async handleConnection(client: Socket) {
@@ -45,6 +48,15 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await client.join(kiosk.id);
     await this.prisma.kiosk.update({ where: { id: kiosk.id }, data: { status: 'ONLINE', lastSeenAt: new Date() } });
     this.logger.log(`Kiosk ${kiosk.id} connected (${client.id})`);
+
+    // Catch-up: a job may have been queued while this kiosk was offline.
+    const pending = await this.prisma.job.findMany({
+      where: { kioskId: kiosk.id, state: 'QUEUED', otpExpiresAt: { gt: new Date() } },
+    });
+    for (const job of pending) {
+      this.logger.log(`Re-emitting queued job ${job.id} to kiosk ${kiosk.id} after reconnect`);
+      this.emitJobQueued(kiosk.id, job);
+    }
   }
 
   async handleDisconnect(client: Socket) {
@@ -75,6 +87,11 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
       settings: job.settings ? JSON.parse(job.settings) : null,
       priceTotal: job.priceTotal,
     });
+  }
+
+  /** Remote command from the admin dashboard (Phase 5). */
+  emitKioskCommand(kioskId: string, command: { type: 'test_print' | 'reboot_agent' | 'maintenance_on' | 'maintenance_off' }) {
+    this.server.to(kioskId).emit('kiosk:command', command);
   }
 
   @SubscribeMessage('job:claim')
@@ -133,7 +150,7 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
       where: { id: job.id },
       data: { state: 'COMPLETED', printedAt: new Date(), otpHash: null },
     });
-    await this.deleteFile(job.id, job.fileKey);
+    await this.cleanup.purge(job.id, job.fileKey);
     this.logger.log(`Job ${job.id} COMPLETED — file deleted (hard guarantee, spec §5 rule 1)`);
   }
 
@@ -141,13 +158,14 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async onFailed(@ConnectedSocket() client: Socket, @MessageBody() body: { jobId?: string; reason?: string }) {
     const job = await this.claimOwnedPrintingJob(client, body?.jobId);
     if (!job) return;
-    await this.prisma.job.update({
-      where: { id: job.id },
-      data: { state: 'FAILED', failReason: body?.reason ?? 'PRINT_FAILED' },
-    });
-    await this.deleteFile(job.id, job.fileKey);
-    // Phase 2: Razorpay auto-refund fires here (spec §5 rule 2).
-    this.logger.warn(`Job ${job.id} FAILED (${body?.reason ?? 'PRINT_FAILED'}) — file deleted`);
+    const reason = body?.reason ?? 'PRINT_FAILED';
+    // Spec §5 rule 2: paid job failing → automatic refund; no payment → plain FAILED.
+    const refunded = await this.refunds.refundFailedJob(job.id, reason);
+    if (!refunded) {
+      await this.prisma.job.update({ where: { id: job.id }, data: { state: 'FAILED', failReason: reason } });
+      await this.cleanup.purge(job.id, job.fileKey);
+    }
+    this.logger.warn(`Job ${job.id} failed at kiosk (${reason}) — refunded=${refunded}`);
   }
 
   @SubscribeMessage('heartbeat')
@@ -171,15 +189,5 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const job = await this.prisma.job.findUnique({ where: { id: jobId } });
     if (!job || job.kioskId !== kioskId || job.state !== 'PRINTING') return null;
     return job;
-  }
-
-  private async deleteFile(jobId: string, fileKey: string | null) {
-    if (!fileKey) return;
-    try {
-      await this.storage.delete(jobId, fileKey);
-    } catch (err) {
-      this.logger.error(`Failed deleting file for job ${jobId}: ${err}`);
-    }
-    await this.prisma.job.update({ where: { id: jobId }, data: { fileKey: null } });
   }
 }

@@ -9,7 +9,8 @@
     "dev": "pnpm --filter @print-kiosk/shared build && pnpm --parallel --stream --filter \"./apps/*\" run dev",
     "build": "pnpm --filter @print-kiosk/shared build && pnpm -r run build",
     "test": "pnpm --filter @print-kiosk/shared run test",
-    "e2e": "node apps/api/scripts/e2e-phase1.mjs"
+    "e2e": "node apps/api/scripts/e2e-phase1.mjs",
+    "e2e:phase2": "node apps/api/scripts/e2e-phase2.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

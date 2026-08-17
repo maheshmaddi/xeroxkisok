@@ -7,5 +7,6 @@ import { KioskGatewayModule } from '../kiosk-gateway/kiosk-gateway.module';
   imports: [KioskGatewayModule],
   controllers: [JobsController],
   providers: [JobsService],
+  exports: [JobsService],
 })
 export class JobsModule {}

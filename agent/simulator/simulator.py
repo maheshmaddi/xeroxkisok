@@ -92,6 +92,10 @@ def handle_claim(job_id: str, result) -> None:
     for page in range(1, pages + 1):
         sio.emit("job:progress", {"jobId": job_id, "page": page, "pages": pages}, namespace="/kiosk")
         time.sleep(0.3)
+        if ARGS.fail_after and page >= ARGS.fail_after:
+            sio.emit("job:failed", {"jobId": job_id, "reason": "SIMULATED_PRINTER_FAILURE"}, namespace="/kiosk")
+            log(f"job {job_id} FAILED (simulated) after {page} page(s)")
+            return
 
     sio.emit("job:completed", {"jobId": job_id}, namespace="/kiosk")
     log(f"job {job_id} COMPLETED — collect your prints")
@@ -121,6 +125,7 @@ def main() -> None:
     parser.add_argument("--out", default=str(pathlib.Path(__file__).resolve().parent.parent / "printed"))
     parser.add_argument("--otp", help="OTP to use (skips prompting)")
     parser.add_argument("--otp-file", help="File the OTP will appear in (polled)")
+    parser.add_argument("--fail-after", type=int, help="Simulate printer failure after N pages (0 = off)")
     ARGS = parser.parse_args()
 
     try:

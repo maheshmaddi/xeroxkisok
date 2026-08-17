@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { FileCleanupService } from './file-cleanup.service';
 import { LocalStorageService } from './local-storage.service';
 import { STORAGE } from './storage.constants';
 import type { StorageService } from './storage.types';
@@ -19,7 +20,8 @@ import type { StorageService } from './storage.types';
         return new LocalStorageService(config);
       },
     },
+    FileCleanupService,
   ],
-  exports: [STORAGE],
+  exports: [STORAGE, FileCleanupService],
 })
 export class StorageModule {}

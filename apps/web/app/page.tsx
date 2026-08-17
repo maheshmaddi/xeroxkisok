@@ -70,6 +70,33 @@ function uploadWithProgress(url: string, file: File, onProgress: (fraction: numb
   });
 }
 
+interface RazorpayCheckoutOptions {
+  key: string;
+  order_id: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description?: string;
+  theme?: { color?: string };
+  handler: () => void;
+}
+
+type RazorpayCtor = new (options: RazorpayCheckoutOptions) => { open: () => void };
+
+/** Loads https://checkout.razorpay.com/v1/checkout.js once; undefined on failure. */
+async function loadRazorpayCheckout(): Promise<RazorpayCtor | undefined> {
+  const w = window as unknown as { Razorpay?: RazorpayCtor };
+  if (w.Razorpay) return w.Razorpay;
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('checkout script failed'));
+    document.head.appendChild(script);
+  }).catch(() => undefined);
+  return w.Razorpay;
+}
+
 export default function Page() {
   const [phase, setPhase] = useState<Phase>('loading');
   const [kiosk, setKiosk] = useState<KioskInfo | null>(null);
@@ -211,13 +238,35 @@ export default function Page() {
     if (!job) return;
     setError(null);
     try {
-      // Phase 1: mock pay. Phase 2 swaps this for Razorpay UPI checkout.
-      await api(`/jobs/${job.jobId}/pay`, { method: 'POST', token: job.token });
-      setPhase('otp');
+      const res = await api<{ mode: 'mock' | 'razorpay'; jobId: string; state?: string; orderId?: string; keyId?: string; amountPaise?: number }>(
+        `/jobs/${job.jobId}/pay`,
+        { method: 'POST', token: job.token },
+      );
+      if (res.mode === 'razorpay' && res.orderId && res.keyId && typeof res.amountPaise === 'number') {
+        const RazorpayCtor = await loadRazorpayCheckout();
+        if (!RazorpayCtor) {
+          setError('Could not load the payment window. Check your connection and retry.');
+          return;
+        }
+        const rzp = new RazorpayCtor({
+          key: res.keyId,
+          order_id: res.orderId,
+          amount: res.amountPaise,
+          currency: 'INR',
+          name: 'Print Kiosk',
+          description: fileName,
+          theme: { color: '#4f46e5' },
+          handler: () => setPhase('otp'), // capture is confirmed by the webhook; polling picks it up
+        });
+        rzp.open();
+      } else {
+        // Phase 1 mock pay — capture already happened server-side.
+        setPhase('otp');
+      }
     } catch (err: any) {
       setError(err?.message ?? 'Payment failed');
     }
-  }, [job]);
+  }, [job, fileName]);
 
   const kioskUnavailable = kiosk && kiosk.status !== 'ONLINE';
 
@@ -397,8 +446,8 @@ function OtpScreen({ status, otp, now }: { status: JobStatus | null; otp: string
         <h2 className="mt-3 text-lg font-bold">{state === 'FAILED' ? 'Printing failed' : 'Code expired'}</h2>
         <p className="mt-2 text-sm text-slate-600">
           {state === 'FAILED'
-            ? 'Your payment will be refunded automatically — it returns in 3–5 days. (Auto-refund lands with Phase 2 payments.)'
-            : 'The 30-minute collection window passed. Your payment will be refunded automatically.'}
+            ? 'Your payment has been refunded automatically — the amount returns in 3–5 days.'
+            : 'The 30-minute collection window passed. Your payment has been refunded automatically.'}
         </p>
         {status?.failReason && <p className="mt-2 text-xs text-slate-400">Reason: {status.failReason}</p>}
       </section>

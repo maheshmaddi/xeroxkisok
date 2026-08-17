@@ -13,8 +13,10 @@ import { STORAGE } from '../storage/storage.constants';
 import type { StorageService } from '../storage/storage.types';
 import { CorruptPdfError, inspectPdf, PasswordProtectedPdfError, renderPdfPreviews } from '../pdf/pdf.util';
 import { KioskGateway } from '../kiosk-gateway/kiosk.gateway';
+import { PAY_PROVIDER } from '../payments/payments.constants';
+import type { PayIntent, PayProvider } from '../payments/payments.types';
 
-const OTP_TTL_MIN = 30;
+const OTP_TTL_MIN = Number(process.env.OTP_TTL_MIN ?? 30);
 const OTP_MAX_ATTEMPTS = 5;
 
 @Injectable()
@@ -33,6 +35,7 @@ export class JobsService {
     private readonly prisma: PrismaService,
     @Inject(STORAGE) private readonly storage: StorageService,
     private readonly gateway: KioskGateway,
+    @Inject(PAY_PROVIDER) private readonly payProvider: PayProvider,
   ) {}
 
   // POST /jobs
@@ -131,10 +134,47 @@ export class JobsService {
     return { jobId: job.id, ...result };
   }
 
-  // POST /jobs/:id/pay — Phase 1 mock; Phase 2 replaces this with a Razorpay order + webhook
-  async pay(jobId: string, token: string | undefined) {
+  /**
+   * POST /jobs/:id/pay — mock mode captures instantly (Phase 1 behavior);
+   * Razorpay mode creates an order and returns checkout details (spec §5).
+   */
+  async pay(jobId: string, token: string | undefined): Promise<PayIntent> {
     const job = await this.getByToken(jobId, token);
     if (job.state !== 'AWAITING_PAYMENT') throw new ConflictException('Job is not awaiting payment');
+
+    if (this.payProvider.mode === 'mock') {
+      const payment = await this.prisma.payment.create({
+        data: {
+          jobId: job.id,
+          razorpayOrderId: `order_mock_${randomBytes(8).toString('hex')}`,
+          amount: job.priceTotal,
+          status: 'created',
+        },
+      });
+      await this.markPaidAndQueue(job.id, `pay_mock_${randomBytes(6).toString('hex')}`);
+      this.logger.log(`Job ${job.id} paid (mock, ₹${(payment.amount / 100).toFixed(2)}) → QUEUED`);
+      return { mode: 'mock', jobId: job.id, state: 'QUEUED' };
+    }
+
+    const existing = await this.prisma.payment.findUnique({ where: { jobId: job.id } });
+    const intent = await this.payProvider.createOrder(job, existing);
+    if (!existing) {
+      await this.prisma.payment.create({
+        data: { jobId: job.id, razorpayOrderId: (intent as any).orderId, amount: job.priceTotal, status: 'created' },
+      });
+    }
+    return intent;
+  }
+
+  /**
+   * The moment money is confirmed (mock pay here, payment.captured webhook in
+   * Razorpay mode): record capture, issue OTP, queue for the kiosk.
+   * Idempotent — a replayed webhook is a no-op.
+   */
+  async markPaidAndQueue(jobId: string, razorpayPaymentId: string): Promise<void> {
+    const job = await this.prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) return;
+    if (job.state !== 'AWAITING_PAYMENT') return; // already captured/queued — idempotent
 
     const otp = String(randomInt(0, 10_000)).padStart(4, '0');
     const otpExpiresAt = new Date(Date.now() + OTP_TTL_MIN * 60_000);
@@ -150,11 +190,13 @@ export class JobsService {
         otpShownAt: null,
       },
     });
+    await this.prisma.payment.updateMany({
+      where: { jobId: job.id, status: 'created' },
+      data: { status: 'captured', razorpayPaymentId },
+    });
     this.pendingOtps.set(job.id, { digits: otp, expiresAt: otpExpiresAt.getTime() });
     this.gateway.emitJobQueued(job.kioskId, queued);
-
-    this.logger.log(`Job ${job.id} paid (mock) → QUEUED; OTP issued, expires in ${OTP_TTL_MIN} min`);
-    return { jobId: job.id, state: 'QUEUED', payMethod: 'mock' as const };
+    this.logger.log(`Job ${job.id} captured (${razorpayPaymentId}) → QUEUED; OTP expires in ${OTP_TTL_MIN} min`);
   }
 
   // GET /jobs/:id/status — polled by the user app; OTP revealed exactly once

@@ -3,11 +3,13 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
 import { StorageModule } from './storage/storage.module';
+import { PaymentsModule } from './payments/payments.module';
 import { JobsModule } from './jobs/jobs.module';
 import { FilesModule } from './files/files.module';
 import { KiosksModule } from './kiosks/kiosks.module';
 import { KioskGatewayModule } from './kiosk-gateway/kiosk-gateway.module';
 import { SweepsModule } from './sweeps/sweeps.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -15,11 +17,13 @@ import { SweepsModule } from './sweeps/sweeps.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     StorageModule,
+    PaymentsModule,
     JobsModule,
     FilesModule,
     KiosksModule,
     KioskGatewayModule,
     SweepsModule,
+    WebhooksModule,
   ],
 })
 export class AppModule {}
