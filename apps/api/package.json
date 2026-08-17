@@ -1,0 +1,41 @@
+{
+  "name": "@print-kiosk/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node --transpile-only src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "setup": "pnpm run db:push && pnpm run seed",
+    "db:push": "node scripts/gen-sqlite-schema.mjs && prisma db push --schema prisma/schema.sqlite.prisma",
+    "generate": "node scripts/gen-sqlite-schema.mjs && prisma generate --schema prisma/schema.sqlite.prisma",
+    "seed": "ts-node --transpile-only prisma/seed.ts",
+    "postinstall": "node scripts/gen-sqlite-schema.mjs && prisma generate --schema prisma/schema.sqlite.prisma",
+    "make-pdf": "node scripts/make-test-pdf.mjs"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.4.1",
+    "@nestjs/config": "^3.2.3",
+    "@nestjs/core": "^10.4.1",
+    "@nestjs/platform-express": "^10.4.1",
+    "@nestjs/platform-socket.io": "^10.4.1",
+    "@nestjs/schedule": "^4.1.0",
+    "@nestjs/websockets": "^10.4.1",
+    "@prisma/client": "^5.22.0",
+    "@print-kiosk/shared": "workspace:*",
+    "bcryptjs": "^2.4.3",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "socket.io": "^4.7.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.15",
+    "prisma": "^5.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}

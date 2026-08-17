@@ -1,0 +1,209 @@
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Logger } from '@nestjs/common';
+import { randomBytes, randomInt } from 'node:crypto';
+import * as bcrypt from 'bcryptjs';
+import {
+  CreateJobSchema,
+  DocumentSettingsSchema,
+  MAX_FILE_BYTES,
+  priceDocument,
+  type PriceResult,
+} from '@print-kiosk/shared';
+import { PrismaService } from '../prisma/prisma.service';
+import { STORAGE } from '../storage/storage.constants';
+import type { StorageService } from '../storage/storage.types';
+import { CorruptPdfError, inspectPdf, PasswordProtectedPdfError, renderPdfPreviews } from '../pdf/pdf.util';
+import { KioskGateway } from '../kiosk-gateway/kiosk.gateway';
+
+const OTP_TTL_MIN = 30;
+const OTP_MAX_ATTEMPTS = 5;
+
+@Injectable()
+export class JobsService {
+  private readonly logger = new Logger(JobsService.name);
+
+  /**
+   * OTP plaintext registry. The DB stores only the bcrypt hash (spec §5), so
+   * the digits live in-memory between pay() and the first /status reveal.
+   * Single API instance in v1; if the process restarts inside that window the
+   * OTP is unrecoverable and the job walks the EXPIRED → refund path.
+   */
+  private readonly pendingOtps = new Map<string, { digits: string; expiresAt: number }>();
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(STORAGE) private readonly storage: StorageService,
+    private readonly gateway: KioskGateway,
+  ) {}
+
+  // POST /jobs
+  async create(body: unknown) {
+    const parsed = CreateJobSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.issues[0]?.message ?? 'Invalid request');
+
+    const kiosk = await this.prisma.kiosk.findUnique({ where: { id: parsed.data.kioskId } });
+    if (!kiosk) throw new BadRequestException(`Unknown kiosk "${parsed.data.kioskId}"`);
+
+    const ext = parsed.data.fileName.split('.').pop()?.toLowerCase() ?? '';
+    const fileType = ext === 'jpeg' ? 'jpg' : ext;
+    if (!['pdf', 'docx', 'jpg', 'png'].includes(fileType)) {
+      throw new BadRequestException('Only PDF, DOCX, JPG and PNG files are supported');
+    }
+
+    const job = await this.prisma.job.create({
+      data: {
+        kioskId: kiosk.id,
+        fileName: parsed.data.fileName,
+        fileType,
+        accessToken: randomBytes(16).toString('hex'), // 128-bit (spec §9)
+      },
+    });
+    const upload = await this.storage.uploadTarget(job.id, job.accessToken);
+    return { jobId: job.id, upload };
+  }
+
+  // PUT /jobs/:id/file (local-dev storage driver)
+  async saveUpload(jobId: string, token: string | undefined, body: unknown) {
+    const job = await this.getByToken(jobId, token);
+    if (job.state !== 'UPLOADED') throw new ConflictException('This job already has a file');
+    if (!Buffer.isBuffer(body) || body.length === 0) throw new BadRequestException('Empty upload body');
+    if (body.length > MAX_FILE_BYTES) throw new BadRequestException('File exceeds the 50MB limit');
+    const fileKey = await this.storage.saveUpload(jobId, body);
+    await this.prisma.job.update({ where: { id: jobId }, data: { fileKey } });
+    return { ok: true };
+  }
+
+  // POST /jobs/:id/process — page count + previews; terminal failure on bad files
+  async process(jobId: string, token: string | undefined) {
+    const job = await this.getByToken(jobId, token);
+    if (job.state !== 'UPLOADED' || !job.fileKey) {
+      throw new ConflictException('Job is not awaiting a freshly uploaded file');
+    }
+    if (job.fileType === 'docx') {
+      throw await this.fail(job.id, 'DOCX_NOT_YET_SUPPORTED', 'DOCX support arrives in Phase 4 — please upload a PDF for now');
+    }
+
+    const buf = await this.storage.read(jobId, job.fileKey);
+
+    let pages: number;
+    if (job.fileType === 'pdf') {
+      try {
+        pages = await inspectPdf(buf);
+      } catch (err) {
+        if (err instanceof PasswordProtectedPdfError) {
+          throw await this.fail(job.id, 'PASSWORD_PROTECTED_PDF', 'This PDF is password-protected. Remove the password and upload again.');
+        }
+        if (err instanceof CorruptPdfError) {
+          throw await this.fail(job.id, 'CORRUPT_PDF', 'This PDF could not be read — the file may be corrupt.');
+        }
+        throw err;
+      }
+      if (pages < 1) {
+        throw await this.fail(job.id, 'EMPTY_PDF', 'This PDF has no pages.');
+      }
+    } else {
+      pages = 1; // images: single "page"; photo modes arrive in Phase 4
+    }
+
+    await this.prisma.job.update({ where: { id: job.id }, data: { pages, state: 'PRICED' } });
+    const previews = job.fileType === 'pdf' ? await renderPdfPreviews(buf, job.id) : [];
+    return { pages, previews };
+  }
+
+  // POST /jobs/:id/price — server-side pricing only (spec §5 rule 5)
+  async price(jobId: string, token: string | undefined, body: unknown): Promise<PriceResult & { jobId: string }> {
+    const job = await this.getByToken(jobId, token);
+    if (job.state !== 'PRICED') throw new ConflictException('Process the file before pricing');
+
+    const parsed = DocumentSettingsSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.issues[0]?.message ?? 'Invalid print settings');
+
+    let result: PriceResult;
+    try {
+      result = priceDocument(parsed.data, job.pages, job.kiosk.pricing);
+    } catch (err: any) {
+      throw new BadRequestException(err?.message ?? 'Invalid print settings');
+    }
+
+    await this.prisma.job.update({
+      where: { id: job.id },
+      data: { settings: JSON.stringify(parsed.data), priceTotal: result.totalPaise, state: 'AWAITING_PAYMENT' },
+    });
+    return { jobId: job.id, ...result };
+  }
+
+  // POST /jobs/:id/pay — Phase 1 mock; Phase 2 replaces this with a Razorpay order + webhook
+  async pay(jobId: string, token: string | undefined) {
+    const job = await this.getByToken(jobId, token);
+    if (job.state !== 'AWAITING_PAYMENT') throw new ConflictException('Job is not awaiting payment');
+
+    const otp = String(randomInt(0, 10_000)).padStart(4, '0');
+    const otpExpiresAt = new Date(Date.now() + OTP_TTL_MIN * 60_000);
+
+    // QUEUED before emitting so an instant agent claim can't race the write.
+    const queued = await this.prisma.job.update({
+      where: { id: job.id },
+      data: {
+        state: 'QUEUED',
+        otpHash: bcrypt.hashSync(otp, 10),
+        otpExpiresAt,
+        otpAttempts: 0,
+        otpShownAt: null,
+      },
+    });
+    this.pendingOtps.set(job.id, { digits: otp, expiresAt: otpExpiresAt.getTime() });
+    this.gateway.emitJobQueued(job.kioskId, queued);
+
+    this.logger.log(`Job ${job.id} paid (mock) → QUEUED; OTP issued, expires in ${OTP_TTL_MIN} min`);
+    return { jobId: job.id, state: 'QUEUED', payMethod: 'mock' as const };
+  }
+
+  // GET /jobs/:id/status — polled by the user app; OTP revealed exactly once
+  async status(jobId: string, token: string | undefined) {
+    const job = await this.getByToken(jobId, token);
+
+    const response: Record<string, unknown> = {
+      jobId: job.id,
+      state: job.state,
+      pages: job.pages,
+      settings: job.settings ? JSON.parse(job.settings) : null,
+      priceTotal: job.priceTotal,
+      fileName: job.fileName,
+      failReason: job.failReason,
+      printedAt: job.printedAt,
+      otpExpiresAt: job.otpExpiresAt,
+      otpLocked: job.otpAttempts >= OTP_MAX_ATTEMPTS,
+    };
+
+    const pending = this.pendingOtps.get(job.id);
+    const canReveal =
+      (job.state === 'QUEUED' || job.state === 'PRINTING') &&
+      pending &&
+      pending.expiresAt > Date.now() &&
+      !job.otpShownAt &&
+      job.otpAttempts < OTP_MAX_ATTEMPTS;
+
+    if (canReveal) {
+      response.otp = pending.digits;
+      this.pendingOtps.delete(job.id);
+      await this.prisma.job.update({ where: { id: job.id }, data: { otpShownAt: new Date() } });
+    }
+    return response;
+  }
+
+  /** Mark FAILED and return the exception to throw. */
+  private async fail(jobId: string, reason: string, message: string): Promise<never> {
+    await this.prisma.job.update({ where: { id: jobId }, data: { state: 'FAILED', failReason: reason } });
+    throw new BadRequestException(message);
+  }
+
+  async getByToken(jobId: string, token: string | undefined) {
+    const job = await this.prisma.job.findUnique({
+      where: { id: jobId },
+      include: { kiosk: { include: { pricing: true } } },
+    });
+    if (!job || !token || job.accessToken !== token) {
+      throw new NotFoundException('Job not found');
+    }
+    return job;
+  }
+}

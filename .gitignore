@@ -1,0 +1,25 @@
+# Dependencies / builds
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local environment
+.env
+.env.local
+
+# Local dev state (SQLite db, uploads, scratch)
+.local/
+
+# Generated from schema.prisma by apps/api/scripts/gen-sqlite-schema.mjs
+apps/api/prisma/schema.sqlite.prisma
+
+# Agent
+agent/__pycache__/
+agent/.venv/
+agent/printed/
+
+# Test artifacts
+otp-e2e.txt

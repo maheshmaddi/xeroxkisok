@@ -1,0 +1,2 @@
+# Phase 1 simulator agent deps (the real Phase 3 agent adds evdev, pycups, pysnmp, fastapi)
+python-socketio[client]==5.13.0

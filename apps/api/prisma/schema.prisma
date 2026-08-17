@@ -1,0 +1,82 @@
+// Canonical schema (PostgreSQL — production + CI).
+// Local dev uses prisma/schema.sqlite.prisma, generated from this file by
+// scripts/gen-sqlite-schema.mjs. Keep both provider-compatible:
+//  - no `enum` types (KioskStatus/JobState are validated Strings)
+//  - no `Json` fields (serialized JSON Strings validated with zod)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Kiosk {
+  id                String         @id // "K001"
+  name              String // "ABC College, Gate 2"
+  secretKey         String // agent auth token (bcrypt hash)
+  printerIp         String
+  pricingId         String
+  pricing           PricingProfile @relation(fields: [pricingId], references: [id])
+  status            String         @default("OFFLINE") // KioskStatus union
+  lastSeenAt        DateTime?
+  inkLevels         String? // JSON: {black: 80, cyan: 65, ...}
+  sheetsSinceRefill Int            @default(0)
+  paperCapacity     Int            @default(500)
+  jobs              Job[]
+}
+
+model PricingProfile {
+  id            String @id @default(cuid())
+  name          String
+  bwA4          Int // paise per side
+  colorA4       Int
+  bwA3          Int
+  colorA3       Int
+  photo4x6      Int
+  passportSheet Int
+  kiosks        Kiosk[]
+}
+
+model Job {
+  id           String    @id @default(cuid())
+  kioskId      String
+  kiosk        Kiosk     @relation(fields: [kioskId], references: [id])
+  accessToken  String    @unique // 128-bit random token; job URL identity (spec §9)
+  fileKey      String? // storage object key (null after deletion)
+  fileName     String
+  fileType     String // pdf | docx | jpg | png
+  pages        Int       @default(0)
+  settings     String? // JSON DocumentSettings
+  priceTotal   Int       @default(0) // paise
+  otpHash      String?
+  otpExpiresAt DateTime?
+  otpAttempts  Int       @default(0)
+  otpShownAt   DateTime? // OTP is returned via /status exactly once (spec §5)
+  state        String    @default("UPLOADED") // JobState union
+  failReason   String?
+  payment      Payment?
+  createdAt    DateTime  @default(now())
+  printedAt    DateTime?
+}
+
+model Payment {
+  id                String  @id @default(cuid())
+  jobId             String  @unique
+  job               Job     @relation(fields: [jobId], references: [id])
+  razorpayOrderId   String
+  razorpayPaymentId String?
+  amount            Int
+  status            String // created | captured | refund_initiated | refunded
+  refundId          String?
+}
+
+model ConsumableEvent {
+  id        String   @id @default(cuid())
+  kioskId   String
+  type      String // PAPER_REFILL | INK_REFILL | SNAPSHOT
+  data      String // JSON
+  createdAt DateTime @default(now())
+}
