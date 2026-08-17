@@ -14,3 +14,12 @@ export class KiosksController {
     return { id: kiosk.id, name: kiosk.name, status: kiosk.status };
   }
 }
+
+/** Agent self-update check (spec §7 updater.py). No published release yet. */
+@Controller('agent')
+export class AgentMetaController {
+  @Get('version')
+  version() {
+    return { latest: null };
+  }
+}

@@ -1,0 +1,10 @@
+# Real kiosk agent (Phase 3) — Linux (Ubuntu Server 24.04) on the kiosk controller.
+python-socketio[client]==5.13.0
+pyyaml==6.0.2
+pycups==2.0.4 ; sys_platform == "linux"
+evdev==1.9.1 ; sys_platform == "linux"
+pysnmp==6.2.6 ; sys_platform == "linux"
+fastapi==0.115.6
+uvicorn==0.34.0
+qrcode==8.0
+cryptography==44.0.0

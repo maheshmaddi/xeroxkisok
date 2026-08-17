@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
-import { KiosksController } from './kiosks.controller';
+import { AgentMetaController, KiosksController } from './kiosks.controller';
 
 @Module({
-  controllers: [KiosksController],
+  controllers: [KiosksController, AgentMetaController],
 })
 export class KiosksModule {}

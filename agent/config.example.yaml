@@ -1,0 +1,17 @@
+# Copy to /etc/kiosk/config.yaml on the kiosk controller.
+kiosk_id: K001
+kiosk_secret: change-me-rotatable-from-admin
+api_url: https://api.example.in
+printer_ip: 192.168.1.50
+printer_queue_name: L15150
+display_port: 8080
+tmp_dir: /dev/shm/kiosk
+heartbeat_seconds: 30
+snmp_seconds: 60
+print_progress_timeout: 180
+# Epson private MIB ink OIDs (firmware-dependent; IPP marker-levels is the fallback)
+snmp_oids:
+  black: 1.3.6.1.4.1.1248.1.2.2.54.1.3.1.2.1
+  cyan: 1.3.6.1.4.1.1248.1.2.2.54.1.3.1.2.2
+  magenta: 1.3.6.1.4.1.1248.1.2.2.54.1.3.1.2.3
+  yellow: 1.3.6.1.4.1.1248.1.2.2.54.1.3.1.2.4

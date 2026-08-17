@@ -1,0 +1,27 @@
+[Unit]
+Description=Print Kiosk agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/print-kiosk/venv/bin/python -m kiosk.main
+WorkingDirectory=/opt/print-kiosk
+Environment=PYTHONUNBUFFERED=1
+Environment=PUBLIC_APP_URL=https://app.example.in
+Restart=always
+RestartSec=5
+
+# Hardening (spec §10 Phase 5): least privilege, no new privileges, private tmp
+User=kiosk
+Group=kiosk
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/dev/shm /opt/print-kiosk
+DeviceAllow=char-usb_device rw
+DeviceAllow=char-input rw
+
+[Install]
+WantedBy=multi-user.target
