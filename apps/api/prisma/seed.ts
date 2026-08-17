@@ -20,19 +20,19 @@ async function main() {
   });
 
   const secret = process.env.SEED_KIOSK_SECRET ?? 'dev-secret-001';
-  await prisma.kiosk.upsert({
-    where: { id: 'K001' },
-    update: {},
-    create: {
-      id: 'K001',
-      name: 'Dev Kiosk — Local',
-      secretKey: bcrypt.hashSync(secret, 10),
-      printerIp: '127.0.0.1',
-      pricingId: pricing.id,
-    },
-  });
+  for (const [id, name] of [
+    ['K001', 'Dev Kiosk — Local'],
+    ['K002', 'Load Test Kiosk A'],
+    ['K003', 'Load Test Kiosk B'],
+  ] as const) {
+    await prisma.kiosk.upsert({
+      where: { id },
+      update: {},
+      create: { id, name, secretKey: bcrypt.hashSync(secret, 10), printerIp: '127.0.0.1', pricingId: pricing.id },
+    });
+  }
 
-  console.log(`Seeded kiosk K001 (secret: ${secret}) with pricing profile "${pricing.name}"`);
+  console.log(`Seeded kiosks K001–K003 (secret: ${secret}) with pricing profile "${pricing.name}"`);
 }
 
 main().finally(() => prisma.$disconnect());

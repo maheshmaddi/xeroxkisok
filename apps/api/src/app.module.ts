@@ -10,6 +10,8 @@ import { KiosksModule } from './kiosks/kiosks.module';
 import { KioskGatewayModule } from './kiosk-gateway/kiosk-gateway.module';
 import { SweepsModule } from './sweeps/sweeps.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { AdminModule } from './admin/admin.module';
+import { AlertsModule } from './alerts/alerts.module';
 
 @Module({
   imports: [
@@ -24,6 +26,8 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     KioskGatewayModule,
     SweepsModule,
     WebhooksModule,
+    AdminModule,
+    AlertsModule,
   ],
 })
 export class AppModule {}

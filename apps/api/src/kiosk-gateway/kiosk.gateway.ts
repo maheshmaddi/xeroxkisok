@@ -37,6 +37,12 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {}
 
   async handleConnection(client: Socket) {
+    // socket.io does not await async connection handlers, so per-message
+    // handlers below await this promise before trusting client.data.kioskId.
+    client.data.ready = this.authenticate(client);
+  }
+
+  private async authenticate(client: Socket) {
     const { kioskId, secret } = (client.handshake.auth ?? {}) as { kioskId?: string; secret?: string };
     const kiosk = kioskId ? await this.prisma.kiosk.findUnique({ where: { id: kioskId } }) : null;
     if (!kiosk || typeof secret !== 'string' || !bcrypt.compareSync(secret, kiosk.secretKey)) {
@@ -57,6 +63,12 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.log(`Re-emitting queued job ${job.id} to kiosk ${kiosk.id} after reconnect`);
       this.emitJobQueued(kiosk.id, job);
     }
+  }
+
+  /** Resolves once this socket's auth finished; undefined kioskId means rejected. */
+  private async ready(client: Socket): Promise<string | undefined> {
+    await client.data?.ready?.catch(() => undefined);
+    return client.data?.kioskId as string | undefined;
   }
 
   async handleDisconnect(client: Socket) {
@@ -96,7 +108,7 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('job:claim')
   async onClaim(@ConnectedSocket() client: Socket, @MessageBody() body: { jobId?: string; otp?: string }) {
-    const kioskId = client.data?.kioskId as string | undefined;
+    const kioskId = await this.ready(client);
     const job = body?.jobId
       ? await this.prisma.job.findUnique({ where: { id: body.jobId }, include: { kiosk: true } })
       : null;
@@ -172,7 +184,7 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('heartbeat')
   async onHeartbeat(@ConnectedSocket() client: Socket, @MessageBody() body: { printerState?: string; inkLevels?: unknown; sheetsSinceRefill?: number; agentVersion?: string }) {
-    const kioskId = client.data?.kioskId as string | undefined;
+    const kioskId = await this.ready(client);
     if (!kioskId) return;
     await this.prisma.kiosk.update({
       where: { id: kioskId },
@@ -186,7 +198,7 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   private async claimOwnedPrintingJob(client: Socket, jobId: string | undefined) {
-    const kioskId = client.data?.kioskId as string | undefined;
+    const kioskId = await this.ready(client);
     if (!jobId || !kioskId) return null;
     const job = await this.prisma.job.findUnique({ where: { id: jobId } });
     if (!job || job.kioskId !== kioskId || job.state !== 'PRINTING') return null;

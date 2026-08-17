@@ -39,9 +39,24 @@ def connect_error(data):
     log(f"connect error: {data} (check kiosk id/secret and that the API is running)")
 
 
-def get_otp() -> str:
+def get_otp(job_id: str) -> str:
     if ARGS.otp:
         return ARGS.otp
+    if ARGS.otp_dir:
+        # Per-job OTP file: <dir>/<jobId>.txt — lets many jobs run concurrently.
+        path = pathlib.Path(ARGS.otp_dir) / f"{job_id}.txt"
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            if path.exists():
+                value = path.read_text(encoding="utf-8").strip()
+                if value:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                    return value
+            time.sleep(0.25)
+        raise TimeoutError(f"timed out waiting for OTP file for {job_id}")
     if ARGS.otp_file:
         path = pathlib.Path(ARGS.otp_file)
         deadline = time.time() + 120
@@ -55,21 +70,35 @@ def get_otp() -> str:
                         pass
                     return value
             time.sleep(0.5)
-        raise SystemExit("timed out waiting for the OTP file")
+        raise TimeoutError("timed out waiting for the OTP file")
     return input("Enter the 4-digit OTP shown on the user's phone: ").strip()
 
 
 @sio.on("job:queued", namespace="/kiosk")
 def on_job_queued(payload):
+    # Claim in a worker thread so queued jobs never block the event loop.
+    threading.Thread(target=claim_job, args=(payload,), daemon=True).start()
+
+
+def claim_job(payload: dict) -> None:
     job_id = payload.get("jobId")
     log(f"job queued: {job_id} ({payload.get('fileName')}, {payload.get('pages')} pages) — requesting OTP")
-    otp = get_otp()
-    sio.emit(
-        "job:claim",
-        {"jobId": job_id, "otp": otp},
-        namespace="/kiosk",
-        callback=lambda result: threading.Thread(target=handle_claim, args=(job_id, result), daemon=True).start(),
-    )
+    try:
+        otp = get_otp(job_id)
+    except TimeoutError as exc:
+        log(str(exc))
+        return
+
+    result: dict = {}
+
+    def on_result(res):
+        result.update(res or {})
+
+    sio.emit("job:claim", {"jobId": job_id, "otp": otp}, namespace="/kiosk", callback=on_result)
+    deadline = time.time() + 15
+    while not result and time.time() < deadline:
+        time.sleep(0.1)
+    handle_claim(job_id, result or {})
 
 
 def handle_claim(job_id: str, result) -> None:
@@ -125,6 +154,7 @@ def main() -> None:
     parser.add_argument("--out", default=str(pathlib.Path(__file__).resolve().parent.parent / "printed"))
     parser.add_argument("--otp", help="OTP to use (skips prompting)")
     parser.add_argument("--otp-file", help="File the OTP will appear in (polled)")
+    parser.add_argument("--otp-dir", help="Per-job OTP files appear here as <jobId>.txt (polled)")
     parser.add_argument("--fail-after", type=int, help="Simulate printer failure after N pages (0 = off)")
     ARGS = parser.parse_args()
 

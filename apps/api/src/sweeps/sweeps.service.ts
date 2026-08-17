@@ -1,10 +1,11 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
+import { Cron, Interval } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { STORAGE } from '../storage/storage.constants';
 import type { StorageService } from '../storage/storage.types';
 import { FileCleanupService } from '../storage/file-cleanup.service';
 import { RefundsService } from '../payments/refunds.service';
+import { AlertsService } from '../alerts/alerts.service';
 
 const UPLOAD_WINDOW_MIN = 60; // spec §5 rule 1
 const SWEEP_INTERVAL_SEC = Number(process.env.SWEEP_INTERVAL_SEC ?? 300);
@@ -23,6 +24,7 @@ export class SweepsService implements OnModuleInit {
     @Inject(STORAGE) private readonly storage: StorageService,
     private readonly cleanup: FileCleanupService,
     private readonly refunds: RefundsService,
+    private readonly alerts: AlertsService,
   ) {}
 
   onModuleInit() {
@@ -33,6 +35,13 @@ export class SweepsService implements OnModuleInit {
   async run() {
     await this.sweepExpiredJobs();
     await this.sweepLeftoverFiles();
+    await this.alerts.evaluate(); // spec §8 alert thresholds ride the sweep cadence
+  }
+
+  /** Daily 9 PM revenue summary (spec §8). */
+  @Cron('0 21 * * *')
+  async daily() {
+    await this.alerts.dailySummary();
   }
 
   /** PAID/QUEUED jobs past their OTP expiry → refund (REFUNDED, or EXPIRED/FAILED awaiting the refund webhook). */
