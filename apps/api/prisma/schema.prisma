@@ -46,6 +46,7 @@ model Job {
   kiosk        Kiosk     @relation(fields: [kioskId], references: [id])
   accessToken  String    @unique // 128-bit random token; job URL identity (spec §9)
   fileKey      String? // storage object key (null after deletion)
+  printKey     String? // server-composed print artifact (photo sheet / converted DOCX)
   fileName     String
   fileType     String // pdf | docx | jpg | png
   pages        Int       @default(0)

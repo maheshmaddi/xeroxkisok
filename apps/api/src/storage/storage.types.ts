@@ -17,8 +17,11 @@ export interface StorageService {
   /** Persist a raw upload body; returns the storage fileKey. */
   saveUpload(jobId: string, body: Buffer): Promise<string>;
 
+  /** Persist a derived artifact (print sheet, converted PDF); returns its key. */
+  saveArtifact(jobId: string, data: Buffer, suffix: string): Promise<string>;
+
   /** Short-lived signed URL the kiosk agent downloads the file from. */
-  downloadUrl(jobId: string, fileKey: string): Promise<string>;
+  downloadUrl(jobId: string, which?: 'file' | 'print'): Promise<string>;
 
   read(jobId: string, fileKey: string): Promise<Buffer>;
 

@@ -118,7 +118,9 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Single-use: clear the hash and move to PRINTING before handing out the file.
     await this.prisma.job.update({ where: { id: job.id }, data: { state: 'PRINTING', otpHash: null } });
-    const fileUrl = job.fileKey ? await this.storage.downloadUrl(job.id, job.fileKey) : null;
+    const usePrintArtifact = Boolean(job.printKey);
+    const key = job.printKey ?? job.fileKey;
+    const fileUrl = key ? await this.storage.downloadUrl(job.id, usePrintArtifact ? 'print' : 'file') : null;
     if (!fileUrl) return { ok: false, jobId: job.id, error: 'FILE_GONE' };
 
     this.logger.log(`Kiosk ${kioskId} claimed job ${job.id} → PRINTING`);
@@ -150,7 +152,7 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
       where: { id: job.id },
       data: { state: 'COMPLETED', printedAt: new Date(), otpHash: null },
     });
-    await this.cleanup.purge(job.id, job.fileKey);
+    await this.cleanup.purge(job.id, job.fileKey, job.printKey);
     this.logger.log(`Job ${job.id} COMPLETED — file deleted (hard guarantee, spec §5 rule 1)`);
   }
 
@@ -163,7 +165,7 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const refunded = await this.refunds.refundFailedJob(job.id, reason);
     if (!refunded) {
       await this.prisma.job.update({ where: { id: job.id }, data: { state: 'FAILED', failReason: reason } });
-      await this.cleanup.purge(job.id, job.fileKey);
+      await this.cleanup.purge(job.id, job.fileKey, job.printKey);
     }
     this.logger.warn(`Job ${job.id} failed at kiosk (${reason}) — refunded=${refunded}`);
   }

@@ -42,7 +42,7 @@ export class RefundsService {
           where: { id: job.id },
           data: { state: 'REFUNDED', failReason: reason },
         });
-        await this.cleanup.purge(job.id, job.fileKey);
+        await this.cleanup.purge(job.id, job.fileKey, job.printKey);
         this.logger.log(`Job ${job.id} → REFUNDED (${refundId}, reason: ${reason})`);
         return true;
       }
@@ -66,7 +66,7 @@ export class RefundsService {
         where: { id: payment.job.id },
         data: { state: 'REFUNDED' },
       });
-      await this.cleanup.purge(payment.job.id, payment.job.fileKey);
+      await this.cleanup.purge(payment.job.id, payment.job.fileKey, payment.job.printKey);
       this.logger.log(`Job ${payment.job.id} refund finalized → REFUNDED`);
     }
   }

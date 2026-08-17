@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePageRange, priceDocument, rupees } from './pricing';
+import { parsePageRange, priceDocument, pricePhoto, pricePrint, rupees } from './pricing';
 import type { PricingRates } from './schemas';
 
 const rates: PricingRates = {
@@ -78,5 +78,25 @@ describe('rupees', () => {
   it('formats paise', () => {
     expect(rupees(8000)).toBe('₹80');
     expect(rupees(2050)).toBe('₹20.50');
+  });
+});
+
+describe('pricePhoto / pricePrint', () => {
+  it('prices a 4x6 photo per sheet', () => {
+    const r = pricePhoto({ mode: 'photo4x6', copies: 2 }, rates);
+    expect(r.totalPaise).toBe(2 * rates.photo4x6);
+    expect(r.sheets).toBe(2);
+    expect(r.lines[0].label).toContain('4×6');
+  });
+
+  it('prices a passport sheet (8-up) per sheet', () => {
+    const r = pricePhoto({ mode: 'passport', copies: 1 }, rates);
+    expect(r.totalPaise).toBe(rates.passportSheet);
+    expect(r.sheets).toBe(1);
+  });
+
+  it('dispatches document vs photo by mode', () => {
+    expect(pricePrint({ mode: 'document', copies: 1, color: false, duplex: false, paperSize: 'A4' }, 5, rates).totalPaise).toBe(5 * 200);
+    expect(pricePrint({ mode: 'passport', copies: 3 }, 1, rates).totalPaise).toBe(3 * rates.passportSheet);
   });
 });

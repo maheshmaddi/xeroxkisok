@@ -3,15 +3,17 @@ import { randomBytes, randomInt } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import {
   CreateJobSchema,
-  DocumentSettingsSchema,
   MAX_FILE_BYTES,
-  priceDocument,
+  PrintSettingsSchema,
+  pricePrint,
   type PriceResult,
 } from '@print-kiosk/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { STORAGE } from '../storage/storage.constants';
 import type { StorageService } from '../storage/storage.types';
 import { CorruptPdfError, inspectPdf, PasswordProtectedPdfError, renderPdfPreviews } from '../pdf/pdf.util';
+import { convertDocxToPdf, DocxConversionError, LibreOfficeUnavailableError } from '../pdf/docx.util';
+import { composePhotoArtifact } from '../images/image.util';
 import { KioskGateway } from '../kiosk-gateway/kiosk.gateway';
 import { PAY_PROVIDER } from '../payments/payments.constants';
 import type { PayIntent, PayProvider } from '../payments/payments.types';
@@ -81,13 +83,40 @@ export class JobsService {
     if (job.state !== 'UPLOADED' || !job.fileKey) {
       throw new ConflictException('Job is not awaiting a freshly uploaded file');
     }
-    if (job.fileType === 'docx') {
-      throw await this.fail(job.id, 'DOCX_NOT_YET_SUPPORTED', 'DOCX support arrives in Phase 4 — please upload a PDF for now');
-    }
 
     const buf = await this.storage.read(jobId, job.fileKey);
-
     let pages: number;
+
+    if (job.fileType === 'docx') {
+      // DOCX → PDF via LibreOffice headless (Phase 4); the converted PDF is
+      // stored as the print artifact the kiosk will print.
+      let converted: Buffer;
+      try {
+        converted = await convertDocxToPdf(buf, job.fileName);
+      } catch (err) {
+        if (err instanceof LibreOfficeUnavailableError) {
+          throw await this.fail(
+            job.id,
+            'LIBREOFFICE_UNAVAILABLE',
+            'DOCX printing is not available on this server yet — please upload a PDF for now.',
+          );
+        }
+        if (err instanceof DocxConversionError) {
+          throw await this.fail(job.id, 'DOCX_CONVERSION_FAILED', 'This document could not be converted. Please upload a PDF.');
+        }
+        throw err;
+      }
+      try {
+        pages = await inspectPdf(converted);
+      } catch {
+        throw await this.fail(job.id, 'CORRUPT_DOCX', 'This document could not be read — the file may be corrupt.');
+      }
+      if (pages < 1) throw await this.fail(job.id, 'EMPTY_DOCX', 'This document has no pages.');
+      const printKey = await this.storage.saveArtifact(job.id, converted, 'print.pdf');
+      await this.prisma.job.update({ where: { id: job.id }, data: { pages, printKey, state: 'PRICED' } });
+      return { pages, previews: [] };
+    }
+
     if (job.fileType === 'pdf') {
       try {
         pages = await inspectPdf(buf);
@@ -104,7 +133,7 @@ export class JobsService {
         throw await this.fail(job.id, 'EMPTY_PDF', 'This PDF has no pages.');
       }
     } else {
-      pages = 1; // images: single "page"; photo modes arrive in Phase 4
+      pages = 1; // images: single "page"; photo modes compose a 4x6 sheet at pricing
     }
 
     await this.prisma.job.update({ where: { id: job.id }, data: { pages, state: 'PRICED' } });
@@ -117,19 +146,41 @@ export class JobsService {
     const job = await this.getByToken(jobId, token);
     if (job.state !== 'PRICED') throw new ConflictException('Process the file before pricing');
 
-    const parsed = DocumentSettingsSchema.safeParse(body);
+    const parsed = PrintSettingsSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.issues[0]?.message ?? 'Invalid print settings');
+    const settings = parsed.data;
+
+    if (settings.mode !== 'document' && job.fileType === 'pdf') {
+      throw new BadRequestException('Photo modes apply to image uploads, not PDFs');
+    }
+    if (settings.mode === 'document' && job.fileType !== 'pdf' && !job.printKey) {
+      throw new BadRequestException('This file must be printed as a photo');
+    }
 
     let result: PriceResult;
     try {
-      result = priceDocument(parsed.data, job.pages, job.kiosk.pricing);
+      result = pricePrint(settings, job.pages, job.kiosk.pricing);
     } catch (err: any) {
       throw new BadRequestException(err?.message ?? 'Invalid print settings');
     }
 
+    let printKey = job.printKey;
+    if (settings.mode !== 'document' && job.fileKey) {
+      // Compose the print-ready 4x6 artifact now (settings known); the kiosk
+      // downloads this instead of the raw photo.
+      try {
+        const original = await this.storage.read(job.id, job.fileKey);
+        const artifact = await composePhotoArtifact(original, settings);
+        printKey = await this.storage.saveArtifact(job.id, artifact, 'print.pdf');
+      } catch (err: any) {
+        this.logger.error(`Photo composition failed for job ${job.id}: ${err?.message}`);
+        throw new BadRequestException('This image could not be processed — try a different photo.');
+      }
+    }
+
     await this.prisma.job.update({
       where: { id: job.id },
-      data: { settings: JSON.stringify(parsed.data), priceTotal: result.totalPaise, state: 'AWAITING_PAYMENT' },
+      data: { settings: JSON.stringify(settings), priceTotal: result.totalPaise, printKey, state: 'AWAITING_PAYMENT' },
     });
     return { jobId: job.id, ...result };
   }

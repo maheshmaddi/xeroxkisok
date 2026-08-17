@@ -30,15 +30,24 @@ export class LocalStorageService implements StorageService {
   }
 
   async saveUpload(jobId: string, body: Buffer): Promise<string> {
-    const fileKey = `${jobId}.bin`;
+    return this.save(jobId, body, 'bin');
+  }
+
+  async saveArtifact(jobId: string, data: Buffer, suffix: string): Promise<string> {
+    return this.save(jobId, data, suffix);
+  }
+
+  private async save(jobId: string, body: Buffer, suffix: string): Promise<string> {
+    const fileKey = `${jobId}.${suffix}`;
     const target = join(this.dir, fileKey);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, body);
     return fileKey;
   }
 
-  async downloadUrl(jobId: string): Promise<string> {
-    return `${this.publicUrl}/files/${jobId}?token=${signFileToken(jobId, 10 * 60_000, this.jwtSecret)}`;
+  async downloadUrl(jobId: string, which: 'file' | 'print' = 'file'): Promise<string> {
+    const suffix = which === 'print' ? '&which=print' : '';
+    return `${this.publicUrl}/files/${jobId}?token=${signFileToken(jobId, 10 * 60_000, this.jwtSecret)}${suffix}`;
   }
 
   async read(_jobId: string, fileKey: string): Promise<Buffer> {

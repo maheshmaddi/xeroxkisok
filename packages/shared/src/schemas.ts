@@ -46,6 +46,27 @@ export const DocumentSettingsSchema = z.object({
 });
 export type DocumentSettings = z.infer<typeof DocumentSettingsSchema>;
 
+/** Crop is normalized: zoom ≥1, offsets 0..1 within the remaining slack. */
+export const CropSchema = z.object({
+  zoom: z.number().min(1).max(5),
+  offsetX: z.number().min(0).max(1),
+  offsetY: z.number().min(0).max(1),
+});
+export type Crop = z.infer<typeof CropSchema>;
+
+export const PhotoSettingsSchema = z.object({
+  mode: z.enum(['photo4x6', 'passport']),
+  copies: z.number().int().min(1).max(50),
+  crop: CropSchema.nullable().optional(),
+});
+export type PhotoSettings = z.infer<typeof PhotoSettingsSchema>;
+
+export const PrintSettingsSchema = z.discriminatedUnion('mode', [
+  DocumentSettingsSchema,
+  PhotoSettingsSchema,
+]);
+export type PrintSettings = z.infer<typeof PrintSettingsSchema>;
+
 export const CreateJobSchema = z.object({
   kioskId: z.string().min(1).max(32),
   fileName: z.string().min(1).max(255),

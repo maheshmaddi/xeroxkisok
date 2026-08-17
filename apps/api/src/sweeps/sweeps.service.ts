@@ -49,7 +49,8 @@ export class SweepsService implements OnModuleInit {
       if (!refunded) {
         // refund couldn't start (or webhook pending) — keep an inspectable terminal-ish state
         await this.prisma.job.update({ where: { id: job.id }, data: { state: 'EXPIRED', failReason: 'OTP_EXPIRED' } });
-        await this.cleanup.purge(job.id, null);
+        const full = await this.prisma.job.findUnique({ where: { id: job.id }, select: { fileKey: true, printKey: true } });
+        await this.cleanup.purge(job.id, full?.fileKey ?? null, full?.printKey ?? null);
       }
     }
     if (stale.length > 0) this.logger.log(`Expiry sweep processed ${stale.length} unclaimed paid job(s)`);
@@ -66,9 +67,9 @@ export class SweepsService implements OnModuleInit {
           { createdAt: { lt: cutoff } },
         ],
       },
-      select: { id: true, fileKey: true },
+      select: { id: true, fileKey: true, printKey: true },
     });
-    for (const job of stale) await this.cleanup.purge(job.id, job.fileKey!);
+    for (const job of stale) await this.cleanup.purge(job.id, job.fileKey!, job.printKey);
     if (stale.length > 0) this.logger.log(`Swept ${stale.length} stored file(s) past retention`);
   }
 }

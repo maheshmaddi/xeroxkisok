@@ -105,6 +105,10 @@ export default function Page() {
   const [pages, setPages] = useState(0);
   const [progress, setProgress] = useState(0);
   const [settings, setSettings] = useState<Settings>({ copies: 1, color: false, duplex: false, paperSize: 'A4', pageRange: '' });
+  const [isImage, setIsImage] = useState(false);
+  const [photoMode, setPhotoMode] = useState<'photo4x6' | 'passport'>('photo4x6');
+  const [crop, setCrop] = useState({ zoom: 1, offsetX: 0.5, offsetY: 0.35 });
+  const [photoSrc, setPhotoSrc] = useState<string | null>(null);
   const [price, setPrice] = useState<PriceResult | null>(null);
   const [pricing, setPricing] = useState(false);
   const [status, setStatus] = useState<JobStatus | null>(null);
@@ -143,17 +147,20 @@ export default function Page() {
       setPricing(true);
       setError(null);
       try {
+        const printSettings = isImage
+          ? { mode: photoMode, copies: settings.copies, ...(photoMode === 'photo4x6' ? { crop } : {}) }
+          : {
+              mode: 'document',
+              copies: settings.copies,
+              color: settings.color,
+              duplex: settings.duplex,
+              paperSize: settings.paperSize,
+              pageRange: settings.pageRange.trim() === '' ? null : settings.pageRange.trim(),
+            };
         const result = await api<PriceResult>(`/jobs/${job.jobId}/price`, {
           method: 'POST',
           token: job.token,
-          body: JSON.stringify({
-            mode: 'document',
-            copies: settings.copies,
-            color: settings.color,
-            duplex: settings.duplex,
-            paperSize: settings.paperSize,
-            pageRange: settings.pageRange.trim() === '' ? null : settings.pageRange.trim(),
-          }),
+          body: JSON.stringify(printSettings),
         });
         setPrice(result);
       } catch (err: any) {
@@ -164,7 +171,7 @@ export default function Page() {
       }
     }, 350);
     return () => clearTimeout(handle);
-  }, [phase, job, settings]);
+  }, [phase, job, settings, isImage, photoMode, crop]);
 
   // Poll job status on the OTP screen (also resumes after a page reload)
   useEffect(() => {
@@ -200,6 +207,8 @@ export default function Page() {
         return;
       }
       setFileName(file.name);
+      setIsImage(file.type.startsWith('image/'));
+      setPhotoSrc(file.type.startsWith('image/') ? URL.createObjectURL(file) : null);
       setPhase('uploading');
       setProgress(0);
       try {
@@ -345,8 +354,10 @@ export default function Page() {
         <section className="space-y-4">
           <div className="rounded-2xl bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">{fileName}</h2>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium">{pages} pages</span>
+              <h2 className="max-w-[70%] truncate text-lg font-semibold">{fileName}</h2>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium">
+                {isImage ? 'Photo' : `${pages} pages`}
+              </span>
             </div>
 
             <label className="mt-4 block text-sm font-medium text-slate-700">Copies (1–50)</label>
@@ -360,19 +371,38 @@ export default function Page() {
               <button className="h-10 w-10 rounded-xl bg-slate-100 text-lg font-bold" onClick={() => setSettings((s) => ({ ...s, copies: Math.min(50, s.copies + 1) }))}>+</button>
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <Toggle label="Color" active={settings.color} onClick={() => setSettings((s) => ({ ...s, color: !s.color }))} />
-              <Toggle label="Duplex" active={settings.duplex} onClick={() => setSettings((s) => ({ ...s, duplex: !s.duplex }))} />
-              <Toggle label="A4" active={settings.paperSize === 'A4'} onClick={() => setSettings((s) => ({ ...s, paperSize: 'A4' }))} />
-              <Toggle label="A3" active={settings.paperSize === 'A3'} onClick={() => setSettings((s) => ({ ...s, paperSize: 'A3' }))} />
-            </div>
+            {isImage ? (
+              <div className="mt-4 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <Toggle label="4×6 photo" active={photoMode === 'photo4x6'} onClick={() => setPhotoMode('photo4x6')} />
+                  <Toggle label="Passport ×8" active={photoMode === 'passport'} onClick={() => setPhotoMode('passport')} />
+                </div>
+                {photoMode === 'passport' && (
+                  <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+                    One 4×6 sheet with 8 passport photos (35×45mm each) on a white grid — cut them apart at home.
+                  </p>
+                )}
+                {photoMode === 'photo4x6' && photoSrc && (
+                  <CropEditor src={photoSrc} crop={crop} onChange={setCrop} />
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <Toggle label="Color" active={settings.color} onClick={() => setSettings((s) => ({ ...s, color: !s.color }))} />
+                  <Toggle label="Duplex" active={settings.duplex} onClick={() => setSettings((s) => ({ ...s, duplex: !s.duplex }))} />
+                  <Toggle label="A4" active={settings.paperSize === 'A4'} onClick={() => setSettings((s) => ({ ...s, paperSize: 'A4' }))} />
+                  <Toggle label="A3" active={settings.paperSize === 'A3'} onClick={() => setSettings((s) => ({ ...s, paperSize: 'A3' }))} />
+                </div>
 
-            <label className="mt-4 block text-sm font-medium text-slate-700">Pages (blank = all)</label>
-            <input
-              className="mt-1 h-11 w-full rounded-xl border border-slate-300 px-3 text-base"
-              placeholder="e.g. 1-3,7" value={settings.pageRange}
-              onChange={(e) => setSettings((s) => ({ ...s, pageRange: e.target.value }))}
-            />
+                <label className="mt-4 block text-sm font-medium text-slate-700">Pages (blank = all)</label>
+                <input
+                  className="mt-1 h-11 w-full rounded-xl border border-slate-300 px-3 text-base"
+                  placeholder="e.g. 1-3,7" value={settings.pageRange}
+                  onChange={(e) => setSettings((s) => ({ ...s, pageRange: e.target.value }))}
+                />
+              </>
+            )}
           </div>
 
           <div className="rounded-2xl bg-white p-5 shadow-sm">
@@ -420,6 +450,75 @@ function Toggle({ label, active, onClick }: { label: string; active: boolean; on
     >
       {label}
     </button>
+  );
+}
+
+interface CropState {
+  zoom: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+/** 2:3 crop frame with pinch-free zoom slider and drag-to-pan (4×6 preview). */
+function CropEditor({ src, crop, onChange }: { src: string; crop: CropState; onChange: (c: CropState) => void }) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+
+  const panFraction = Math.max(0, 1 - 1 / crop.zoom); // total pannable range
+
+  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { x: e.clientX, y: e.clientY, ox: crop.offsetX, oy: crop.offsetY };
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    const frame = frameRef.current;
+    if (!drag || !frame || panFraction === 0) return;
+    const dx = ((e.clientX - drag.x) / frame.clientWidth) / panFraction;
+    const dy = ((e.clientY - drag.y) / frame.clientHeight) / panFraction;
+    onChange({ ...crop, offsetX: clamp01(drag.ox - dx), offsetY: clamp01(drag.oy - dy) });
+  };
+
+  const onPointerUp = () => {
+    dragRef.current = null;
+  };
+
+  const tx = (crop.offsetX - 0.5) * panFraction * -100;
+  const ty = (crop.offsetY - 0.5) * panFraction * -100;
+
+  return (
+    <div>
+      <div
+        ref={frameRef}
+        className="relative aspect-[2/3] w-full max-w-[240px] mx-auto touch-none select-none overflow-hidden rounded-2xl border border-slate-200"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        style={{ cursor: panFraction > 0 ? 'grab' : 'default' }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={src}
+          alt="Crop preview"
+          draggable={false}
+          className="h-full w-full object-cover"
+          style={{ transform: `scale(${crop.zoom}) translate(${tx}%, ${ty}%)` }}
+        />
+      </div>
+      <label className="mt-3 block text-center text-sm font-medium text-slate-700">
+        Zoom
+        <input
+          type="range" min={1} max={3} step={0.05} value={crop.zoom}
+          onChange={(e) => onChange({ ...crop, zoom: Number(e.target.value) })}
+          className="mt-1 w-full"
+        />
+      </label>
+      <p className="text-center text-xs text-slate-400">Drag the photo to position it on the 4×6 print</p>
+    </div>
   );
 }
 

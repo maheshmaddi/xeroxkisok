@@ -1,4 +1,4 @@
-import type { DocumentSettings, PriceResult, PricingRates } from './schemas';
+import type { DocumentSettings, PhotoSettings, PriceResult, PricingRates } from './schemas';
 
 /** Expand a "1-3,7" style range against the document's total page count. */
 export function parsePageRange(range: string | null | undefined, totalPages: number): number[] {
@@ -62,4 +62,31 @@ export function priceDocument(
 export function rupees(paise: number): string {
   const whole = paise % 100 === 0;
   return `₹${(paise / 100).toFixed(whole ? 0 : 2)}`;
+}
+
+/** Photo modes price per finished sheet (4x6 print or 8-up passport sheet). */
+export function pricePhoto(settings: PhotoSettings, rates: PricingRates): PriceResult {
+  const rate = settings.mode === 'photo4x6' ? rates.photo4x6 : rates.passportSheet;
+  const label =
+    settings.mode === 'photo4x6'
+      ? `4×6 photo print × ${settings.copies}`
+      : `Passport sheet — 8 photos of 35×45mm × ${settings.copies}`;
+  const totalPaise = rate * settings.copies;
+  return {
+    totalPaise,
+    sides: settings.copies,
+    sheets: settings.copies,
+    lines: [{ label, qty: settings.copies, unitPaise: rate, totalPaise }],
+  };
+}
+
+/** Dispatch pricing for any print mode (spec §5: computed server-side only). */
+export function pricePrint(
+  settings: DocumentSettings | PhotoSettings,
+  totalPages: number,
+  rates: PricingRates,
+): PriceResult {
+  return settings.mode === 'document'
+    ? priceDocument(settings, totalPages, rates)
+    : pricePhoto(settings, rates);
 }
