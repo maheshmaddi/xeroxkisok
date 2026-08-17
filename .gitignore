@@ -23,3 +23,6 @@ agent/printed/
 
 # Test artifacts
 otp-e2e.txt
+
+# ZCode session state
+.zcode/
