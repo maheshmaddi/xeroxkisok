@@ -12,6 +12,7 @@
     "e2e": "node apps/api/scripts/e2e-phase1.mjs",
     "e2e:phase2": "node apps/api/scripts/e2e-phase2.mjs",
     "e2e:phase4": "node apps/api/scripts/e2e-phase4.mjs",
+    "e2e:razorpay": "node apps/api/scripts/e2e-razorpay.mjs",
     "load-test": "node apps/api/scripts/load-test.mjs",
     "chaos": "node apps/api/scripts/chaos-test.mjs"
   },

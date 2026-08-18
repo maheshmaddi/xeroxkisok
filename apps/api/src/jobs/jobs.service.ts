@@ -218,6 +218,33 @@ export class JobsService {
   }
 
   /**
+   * POST /jobs/:id/pay/confirm — checkout success confirmation for Razorpay
+   * mode (localhost-friendly: webhooks can't reach a dev machine). Verifies
+   * the checkout handler signature with the key secret, then captures.
+   */
+  async confirmPayment(
+    jobId: string,
+    token: string | undefined,
+    body: { razorpay_order_id?: string; razorpay_payment_id?: string; razorpay_signature?: string },
+  ): Promise<{ jobId: string; state: string }> {
+    const job = await this.getByToken(jobId, token);
+    if (job.state !== 'AWAITING_PAYMENT') throw new ConflictException('Job is not awaiting payment');
+
+    const payment = await this.prisma.payment.findUnique({ where: { jobId: job.id } });
+    if (
+      !payment ||
+      payment.razorpayOrderId !== body?.razorpay_order_id ||
+      !body?.razorpay_payment_id ||
+      !this.payProvider.verifyCheckoutPayment(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature)
+    ) {
+      throw new BadRequestException('Payment verification failed');
+    }
+
+    await this.markPaidAndQueue(job.id, body.razorpay_payment_id);
+    return { jobId: job.id, state: 'QUEUED' };
+  }
+
+  /**
    * The moment money is confirmed (mock pay here, payment.captured webhook in
    * Razorpay mode): record capture, issue OTP, queue for the kiosk.
    * Idempotent — a replayed webhook is a no-op.

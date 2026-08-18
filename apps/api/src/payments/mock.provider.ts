@@ -22,4 +22,8 @@ export class MockPayProvider implements PayProvider {
   verifyWebhookSignature(): boolean {
     return false; // mock mode never receives webhooks
   }
+
+  verifyCheckoutPayment(): boolean {
+    return false; // mock mode captures inside pay() — nothing to confirm
+  }
 }

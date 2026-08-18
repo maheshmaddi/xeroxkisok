@@ -22,4 +22,11 @@ export interface PayProvider {
 
   /** Razorpay webhook signature check (mock provider never receives any). */
   verifyWebhookSignature(rawBody: string, signature: string | undefined): boolean;
+
+  /**
+   * Checkout success verification (Razorpay handler signature:
+   * HMAC-SHA256 of `order_id|payment_id` with the key secret). Lets the flow
+   * complete on localhost where webhooks can't reach us.
+   */
+  verifyCheckoutPayment(orderId: string, paymentId: string, signature: string | undefined): boolean;
 }

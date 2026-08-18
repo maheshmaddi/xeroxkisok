@@ -39,6 +39,16 @@ export class JobsController {
     return this.jobs.pay(id, token);
   }
 
+  @Post(':id/pay/confirm')
+  @HttpCode(200)
+  async confirmPay(
+    @Param('id') id: string,
+    @Headers('x-job-token') token: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.jobs.confirmPayment(id, token, body as never);
+  }
+
   @Get(':id/status')
   async status(@Param('id') id: string, @Headers('x-job-token') token: string | undefined) {
     return this.jobs.status(id, token);

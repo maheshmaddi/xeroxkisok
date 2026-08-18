@@ -28,9 +28,32 @@ dev login `admin@local` / `admin-dev-123`).
 | `pnpm e2e` | Phase 1 acceptance — upload → price → mock pay → OTP → print → file deletion |
 | `pnpm e2e:phase2` | payments: failure → auto-refund, expiry → refund, webhook signatures |
 | `pnpm e2e:phase4` | photo 4×6 crop + passport sheet composition, DOCX branch |
+| `pnpm e2e:razorpay` | live Razorpay test-key flow: real order, checkout signature confirm, tamper rejection |
 | `pnpm load-test` | 20 concurrent jobs across 3 simulated kiosks |
 | `pnpm chaos` | corrupt/0-byte/dropped uploads, OTP lockout, double pay, terminal-state audit |
 | `pnpm test` | shared package pricing/range unit tests |
+
+> The mock-mode suites (`e2e`, `e2e:phase2`, `e2e:phase4`, `load-test`, `chaos`)
+> expect `PAYMENTS_MODE=mock` in `apps/api/.env` — real orders can't be captured
+> without the checkout UI. `pnpm e2e:razorpay` runs against real test keys
+> (`auto`/`razorpay` mode) by signing the checkout confirmation locally.
+
+## Payments (Razorpay)
+
+Put test keys in `apps/api/.env` (gitignored — never commit them):
+
+```
+RAZORPAY_KEY_ID=rzp_test_…
+RAZORPAY_KEY_SECRET=…
+PAYMENTS_MODE=auto        # auto = Razorpay when keys present; mock = instant capture
+RAZORPAY_WEBHOOK_SECRET=… # must match the Razorpay dashboard webhook secret
+```
+
+Capture flows two ways: the browser calls `POST /jobs/:id/pay/confirm` after
+checkout.js succeeds (signature verified with the key secret — works on
+localhost), and `POST /webhooks/razorpay` handles `payment.captured` /
+`refund.processed` in production. Set the webhook URL in the Razorpay
+dashboard to `https://api.<your-domain>/webhooks/razorpay`.
 
 ## Phase status
 

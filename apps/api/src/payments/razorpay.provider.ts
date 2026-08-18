@@ -70,4 +70,12 @@ export class RazorpayProvider implements PayProvider {
   verifyWebhookSignature(rawBody: string, signature: string | undefined): boolean {
     return verifyRazorpaySignature(rawBody, signature, this.webhookSecret);
   }
+
+  verifyCheckoutPayment(orderId: string, paymentId: string, signature: string | undefined): boolean {
+    if (!signature) return false;
+    const expected = createHmac('sha256', this.keySecret).update(`${orderId}|${paymentId}`).digest('hex');
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
 }

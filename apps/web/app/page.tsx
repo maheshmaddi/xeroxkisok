@@ -70,6 +70,12 @@ function uploadWithProgress(url: string, file: File, onProgress: (fraction: numb
   });
 }
 
+interface RazorpayCheckoutResponse {
+  razorpay_payment_id: string;
+  razorpay_order_id: string;
+  razorpay_signature: string;
+}
+
 interface RazorpayCheckoutOptions {
   key: string;
   order_id: string;
@@ -78,7 +84,7 @@ interface RazorpayCheckoutOptions {
   name: string;
   description?: string;
   theme?: { color?: string };
-  handler: () => void;
+  handler: (response: RazorpayCheckoutResponse) => void;
 }
 
 type RazorpayCtor = new (options: RazorpayCheckoutOptions) => { open: () => void };
@@ -265,7 +271,26 @@ export default function Page() {
           name: 'Print Kiosk',
           description: fileName,
           theme: { color: '#4f46e5' },
-          handler: () => setPhase('otp'), // capture is confirmed by the webhook; polling picks it up
+          handler: (response) => {
+            // Localhost can't receive webhooks — confirm the checkout
+            // signature directly; webhooks remain the production safety net.
+            void (async () => {
+              try {
+                await api(`/jobs/${job.jobId}/pay/confirm`, {
+                  method: 'POST',
+                  token: job.token,
+                  body: JSON.stringify({
+                    razorpay_order_id: response.razorpay_order_id,
+                    razorpay_payment_id: response.razorpay_payment_id,
+                    razorpay_signature: response.razorpay_signature,
+                  }),
+                });
+                setPhase('otp');
+              } catch (err: any) {
+                setError(err?.message ?? 'Payment confirmation failed — if you were charged, the refund is automatic.');
+              }
+            })();
+          },
         });
         rzp.open();
       } else {

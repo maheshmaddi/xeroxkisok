@@ -15,7 +15,14 @@ import type { PayProvider } from './payments.types';
       useFactory: (config: ConfigService): PayProvider => {
         const keyId = config.get<string>('RAZORPAY_KEY_ID');
         const keySecret = config.get<string>('RAZORPAY_KEY_SECRET');
-        if (keyId && keySecret) {
+        // PAYMENTS_MODE: auto (default — Razorpay when keys present), mock, razorpay.
+        const mode = config.get<string>('PAYMENTS_MODE') ?? 'auto';
+        const useRazorpay = mode === 'razorpay' || (mode === 'auto' && Boolean(keyId && keySecret));
+
+        if (useRazorpay) {
+          if (!keyId || !keySecret) {
+            throw new Error('PAYMENTS_MODE=razorpay requires RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET');
+          }
           const webhookSecret = config.get<string>('RAZORPAY_WEBHOOK_SECRET');
           if (!webhookSecret) {
             throw new Error('RAZORPAY_WEBHOOK_SECRET is required when Razorpay keys are set');
