@@ -76,8 +76,65 @@ def get_otp(job_id: str) -> str:
 
 @sio.on("job:queued", namespace="/kiosk")
 def on_job_queued(payload):
-    # Claim in a worker thread so queued jobs never block the event loop.
-    threading.Thread(target=claim_job, args=(payload,), daemon=True).start()
+    if ARGS.prompt_mode:
+        # One prompt at a time; the server matches the typed code to the right
+        # job (code-only claim), so concurrent customers can't cross codes.
+        with _pending_lock:
+            _pending_jobs.append(payload)
+        _pending_event.set()
+    else:
+        # Scripted modes claim per-job (they know each job's OTP by id).
+        threading.Thread(target=claim_job, args=(payload,), daemon=True).start()
+
+
+_pending_jobs: list = []
+_pending_lock = threading.Lock()
+_pending_event = threading.Event()
+
+
+def prompt_worker() -> None:
+    """Sequential keypad emulation: one prompt, code-only claim, one print."""
+    while True:
+        _pending_event.wait()
+        _pending_event.clear()
+        while True:
+            with _pending_lock:
+                job = _pending_jobs[0] if _pending_jobs else None
+            if job is None:
+                break
+            waiting = len(_pending_jobs)
+            suffix = f" ({waiting} job{'s' if waiting > 1 else ''} waiting)" if waiting > 1 else ""
+            log(f"job queued: {job.get('jobId')} ({job.get('fileName')}, {job.get('pages')} pages){suffix}")
+            while True:
+                otp = input("Enter the 4-digit OTP shown on the user's phone: ").strip()
+                if otp:
+                    break
+                print("Please type the 4 digits.", flush=True)
+            result: dict = {}
+
+            def on_result(res):
+                result.update(res or {})
+
+            sio.emit("job:claim", {"otp": otp}, namespace="/kiosk", callback=on_result)
+            deadline = time.time() + 15
+            while not result and time.time() < deadline:
+                time.sleep(0.1)
+
+            if not result or not result.get("ok"):
+                error = (result or {}).get("error", "no response")
+                if error == "BAD_OTP":
+                    print("Wrong code — try the digits on the phone again.", flush=True)
+                    continue  # re-prompt for the same waiting jobs
+                log(f"claim REJECTED: {error}")
+                if error == "LOCKED":
+                    log("too many wrong attempts — job is locked, user must contact support")
+                with _pending_lock:
+                    _pending_jobs.pop(0)
+                continue
+
+            handle_claim(result["jobId"], result)
+            with _pending_lock:
+                _pending_jobs.pop(0)
 
 
 def claim_job(payload: dict) -> None:
@@ -157,6 +214,8 @@ def main() -> None:
     parser.add_argument("--otp-dir", help="Per-job OTP files appear here as <jobId>.txt (polled)")
     parser.add_argument("--fail-after", type=int, help="Simulate printer failure after N pages (0 = off)")
     ARGS = parser.parse_args()
+    # Interactive keypad emulation unless a scripted OTP mode was chosen.
+    ARGS.prompt_mode = not (ARGS.otp or ARGS.otp_file or ARGS.otp_dir)
 
     try:
         sio.connect(
@@ -168,6 +227,8 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         sys.exit(f"could not connect to {ARGS.api}: {exc}")
 
+    if ARGS.prompt_mode:
+        threading.Thread(target=prompt_worker, daemon=True, name="keypad").start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     sio.wait()
 

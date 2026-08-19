@@ -41,31 +41,30 @@ def main() -> None:
         kiosk_name=config.kiosk_id,
     )
 
-    current_job: dict | None = None
+    current_jobs: list[dict] = []
     job_lock = threading.Lock()
 
     def state_provider() -> dict:
         return printer.state()
 
     def on_job_queued(payload: dict) -> None:
-        nonlocal current_job
+        # Queue, don't drop: several customers may have paid back-to-back.
+        # The keypad code identifies whose job it is (server-side matching).
         with job_lock:
-            if current_job is not None:
-                log.warning("job %s queued while busy with %s — ignoring", payload.get("jobId"), current_job.get("jobId"))
-                return
-            current_job = payload
-        display_state.set("enter-otp")
+            current_jobs.append(payload)
+        display_state.set("enter-otp", f"{len(current_jobs)} job(s) waiting" if len(current_jobs) > 1 else "")
         display_state.broadcast()  # type: ignore[attr-defined]
 
     def on_keypad_submit(otp: str) -> None:
-        nonlocal current_job
+        nonlocal current_jobs
         with job_lock:
-            job = current_job
-            if job is None:
-                return
-        runner.run(job, otp)
-        with job_lock:
-            current_job = None
+            waiting = len(current_jobs)
+        if waiting == 0:
+            return
+        job_id = runner.run_by_code(otp)
+        if job_id:
+            with job_lock:
+                current_jobs = [j for j in current_jobs if j.get("jobId") != job_id]
 
     def on_keypad_change(buffer: str) -> None:
         display_state.set("enter-otp", "•" * len(buffer))
@@ -106,6 +105,7 @@ def main() -> None:
         },
     )
     runner = JobRunner(config, connection, printer, display_state)
+    runner.has_pending = lambda: len(current_jobs) > 0  # display flips back to enter-otp
     runner.cleanup_tmp()
 
     # Keypad (evdev): if missing we log loudly — the kiosk is unusable for OTP.

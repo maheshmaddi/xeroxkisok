@@ -265,7 +265,24 @@ export class JobsService {
     if (!job) return;
     if (job.state !== 'AWAITING_PAYMENT') return; // already captured/queued — idempotent
 
-    const otp = String(randomInt(0, 10_000)).padStart(4, '0');
+    // Codes are the job selector at the keypad: re-roll in the rare case the
+    // digits collide with another waiting code at this kiosk (1/10⁴ pairs).
+    const genOtp = () => String(randomInt(0, 10_000)).padStart(4, '0');
+    let otp = genOtp();
+    for (let tries = 0; tries < 5; tries++) {
+      const siblings = await this.prisma.job.findMany({
+        where: {
+          kioskId: job.kioskId,
+          id: { not: job.id },
+          state: { in: ['PAID', 'QUEUED'] },
+          otpExpiresAt: { gt: new Date() },
+          otpHash: { not: null },
+        },
+        select: { otpHash: true },
+      });
+      if (siblings.every((s) => !bcrypt.compareSync(otp, s.otpHash!))) break;
+      otp = genOtp();
+    }
     const otpExpiresAt = new Date(Date.now() + OTP_TTL_MIN * 60_000);
 
     // QUEUED before emitting so an instant agent claim can't race the write.

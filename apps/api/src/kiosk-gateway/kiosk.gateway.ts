@@ -106,26 +106,68 @@ export class KioskGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(kioskId).emit('kiosk:command', command);
   }
 
+  /**
+   * Kiosk claims a paid job with the OTP typed on the keypad.
+   * jobId optional: without it the code itself selects the job — the server
+   * matches the digits against every waiting job of this kiosk (spec-style
+   * multi-customer flow; agents that know the jobId may still send it).
+   */
   @SubscribeMessage('job:claim')
   async onClaim(@ConnectedSocket() client: Socket, @MessageBody() body: { jobId?: string; otp?: string }) {
     const kioskId = await this.ready(client);
-    const job = body?.jobId
-      ? await this.prisma.job.findUnique({ where: { id: body.jobId }, include: { kiosk: true } })
-      : null;
+    if (!kioskId) return { ok: false, error: 'NOT_FOUND' };
+    const otp = typeof body?.otp === 'string' ? body.otp : '';
 
-    if (!job || !kioskId || job.kioskId !== kioskId) return { ok: false, error: 'NOT_FOUND' };
+    let job: { id: string; kioskId: string; state: string; otpHash: string | null; otpExpiresAt: Date | null; otpAttempts: number; fileKey: string | null; printKey: string | null; fileName: string; fileType: string; pages: number; settings: string | null } | null = null;
+    let otpVerified = false;
+
+    if (body?.jobId) {
+      const found = await this.prisma.job.findUnique({ where: { id: body.jobId } });
+      if (!found || found.kioskId !== kioskId) return { ok: false, error: 'NOT_FOUND' };
+      job = found;
+    } else {
+      // Code-only claim: active codes are unique per kiosk (markPaidAndQueue
+      // re-rolls collisions), so the digits identify exactly one job.
+      const candidates = await this.prisma.job.findMany({
+        where: {
+          kioskId,
+          state: 'QUEUED',
+          otpExpiresAt: { gt: new Date() },
+          otpHash: { not: null },
+          otpAttempts: { lt: OTP_MAX_ATTEMPTS },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+      job = candidates.find((c) => bcrypt.compareSync(otp, c.otpHash!)) ?? null;
+      otpVerified = Boolean(job);
+      if (!job) {
+        // Wrong digits: charge the oldest waiting job's attempt budget
+        // (deterministic; identical to the jobId path in the single-job case).
+        const chargeable = candidates[0];
+        if (!chargeable) return { ok: false, error: 'NOT_FOUND' };
+        const attempts = chargeable.otpAttempts + 1;
+        await this.prisma.job.update({ where: { id: chargeable.id }, data: { otpAttempts: attempts } });
+        this.logger.warn(
+          `Kiosk ${kioskId}: code-only bad OTP (job ${chargeable.id} attempt ${attempts}/${OTP_MAX_ATTEMPTS})`,
+        );
+        return { ok: false, jobId: chargeable.id, error: attempts >= OTP_MAX_ATTEMPTS ? 'LOCKED' : 'BAD_OTP' };
+      }
+    }
+
     if (job.otpAttempts >= OTP_MAX_ATTEMPTS) return { ok: false, jobId: job.id, error: 'LOCKED' };
     if (job.state !== 'QUEUED') return { ok: false, jobId: job.id, error: 'NOT_CLAIMABLE' };
     if (!job.otpHash || !job.otpExpiresAt || job.otpExpiresAt < new Date()) {
       return { ok: false, jobId: job.id, error: 'OTP_EXPIRED' };
     }
 
-    const otpOk = typeof body.otp === 'string' && bcrypt.compareSync(body.otp, job.otpHash);
-    if (!otpOk) {
-      const attempts = job.otpAttempts + 1;
-      await this.prisma.job.update({ where: { id: job.id }, data: { otpAttempts: attempts } });
-      this.logger.warn(`Kiosk ${kioskId}: bad OTP for job ${job.id} (attempt ${attempts}/${OTP_MAX_ATTEMPTS})`);
-      return { ok: false, jobId: job.id, error: attempts >= OTP_MAX_ATTEMPTS ? 'LOCKED' : 'BAD_OTP' };
+    if (!otpVerified) {
+      const otpOk = bcrypt.compareSync(otp, job.otpHash);
+      if (!otpOk) {
+        const attempts = job.otpAttempts + 1;
+        await this.prisma.job.update({ where: { id: job.id }, data: { otpAttempts: attempts } });
+        this.logger.warn(`Kiosk ${kioskId}: bad OTP for job ${job.id} (attempt ${attempts}/${OTP_MAX_ATTEMPTS})`);
+        return { ok: false, jobId: job.id, error: attempts >= OTP_MAX_ATTEMPTS ? 'LOCKED' : 'BAD_OTP' };
+      }
     }
 
     // Single-use: clear the hash and move to PRINTING before handing out the file.

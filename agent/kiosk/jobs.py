@@ -44,22 +44,41 @@ class JobRunner:
             time.sleep(0.05)
         return result or None
 
+    def claim_code(self, otp: str):
+        """Code-only claim: the server matches the digits to the right job."""
+        result: dict = {}
+
+        def cb(res):
+            result.update(res or {})
+
+        self.conn.emit("job:claim", {"otp": otp}, callback=cb)
+        import time
+
+        deadline = time.time() + 10
+        while not result and time.time() < deadline:
+            time.sleep(0.05)
+        return result or None
+
     # ------------------------------------------------------------- pipeline
-    def run(self, job: dict, otp: str) -> None:
-        claim = self.claim(job, otp)
+    def run_by_code(self, otp: str) -> str | None:
+        """Keypad flow: claim by digits, print on success. Returns jobId."""
+        claim = self.claim_code(otp)
         if not claim or not claim.get("ok"):
             error = (claim or {}).get("error", "CLAIM_FAILED")
-            log.warning("claim rejected for %s: %s", job.get("jobId"), error)
+            log.warning("claim rejected: %s", error)
             if error == "LOCKED":
                 self.display.set("error", "Too many wrong codes — please contact support.", "Locked")
             elif error == "OTP_EXPIRED":
                 self.display.set("error", "That code expired. Refund is on its way.", "Code expired")
-            else:
+            elif error == "BAD_OTP":
                 self.display.set("error", "Wrong code — check your phone and try again.", "Try again")
-                self.display.broadcast()  # type: ignore[attr-defined]
+            else:
+                self.display.set("error", "Something went wrong — please try again.", "Error")
             self.display.broadcast()  # type: ignore[attr-defined]
-            return
+            return None
+        return self.run_claim(claim)
 
+    def run_claim(self, claim: dict) -> str | None:
         job_id = claim["jobId"]
         local = self._download(job_id, claim["fileUrl"])
         try:
@@ -77,18 +96,22 @@ class JobRunner:
             self.display.set("collect")
             self.display.broadcast()  # type: ignore[attr-defined]
             log.info("job %s completed", job_id)
+            return job_id
         except PrintFailure as failure:
             self.conn.emit("job:failed", {"jobId": job_id, "reason": failure.reason})
             self.display.set("error", "Printing failed — your payment will be refunded.", "Print failed")
             self.display.broadcast()  # type: ignore[attr-defined]
             log.error("job %s failed: %s (%s)", job_id, failure.reason, failure.detail)
+            return None
         finally:
             self._shred(local)
             import time
 
             time.sleep(8)  # let the user read "collect your prints"
-            self.display.set("idle")
+            self.display.set("enter-otp" if self.has_pending() else "idle")
             self.display.broadcast()  # type: ignore[attr-defined]
+
+    has_pending = lambda self: False  # wired by main; keeps display logic honest
 
     # --------------------------------------------------------------- helpers
     def _download(self, job_id: str, url: str) -> pathlib.Path:
