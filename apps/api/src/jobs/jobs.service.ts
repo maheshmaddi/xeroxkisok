@@ -141,10 +141,13 @@ export class JobsService {
     return { pages, previews };
   }
 
-  // POST /jobs/:id/price — server-side pricing only (spec §5 rule 5)
+  // POST /jobs/:id/price — server-side pricing only (spec §5 rule 5).
+  // Re-priceable on every settings change until payment locks the job.
   async price(jobId: string, token: string | undefined, body: unknown): Promise<PriceResult & { jobId: string }> {
     const job = await this.getByToken(jobId, token);
-    if (job.state !== 'PRICED') throw new ConflictException('Process the file before pricing');
+    if (!['PRICED', 'AWAITING_PAYMENT'].includes(job.state)) {
+      throw new ConflictException('This job can no longer be re-priced');
+    }
 
     const parsed = PrintSettingsSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.issues[0]?.message ?? 'Invalid print settings');
@@ -208,10 +211,18 @@ export class JobsService {
     }
 
     const existing = await this.prisma.payment.findUnique({ where: { jobId: job.id } });
-    const intent = await this.payProvider.createOrder(job, existing);
+    // Reuse the standing order only if the amount still matches — a re-price
+    // after checkout opened must issue a fresh order (stale ones stay unpaid).
+    const reusable = existing && existing.status === 'created' && existing.amount === job.priceTotal ? existing : null;
+    const intent = await this.payProvider.createOrder(job, reusable);
     if (!existing) {
       await this.prisma.payment.create({
         data: { jobId: job.id, razorpayOrderId: (intent as any).orderId, amount: job.priceTotal, status: 'created' },
+      });
+    } else if (existing.razorpayOrderId !== (intent as any).orderId) {
+      await this.prisma.payment.update({
+        where: { id: existing.id },
+        data: { razorpayOrderId: (intent as any).orderId, amount: job.priceTotal, status: 'created' },
       });
     }
     return intent;

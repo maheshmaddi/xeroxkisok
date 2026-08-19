@@ -143,10 +143,13 @@ export default function Page() {
       });
   }, []);
 
-  // Debounced server-side re-pricing on every settings change (spec §5 rule 5)
+  // Debounced server-side re-pricing on every settings change (spec §5 rule 5).
+  // A sequence guard keeps a slow earlier response from overwriting a newer one.
+  const priceSeq = useRef(0);
   useEffect(() => {
     if (phase !== 'settings' || !job) return;
     const handle = setTimeout(async () => {
+      const seq = ++priceSeq.current;
       setPricing(true);
       setError(null);
       try {
@@ -160,12 +163,15 @@ export default function Page() {
               paperSize: doc.paperSize,
               pageRange: doc.pageRange.trim() === '' ? null : doc.pageRange.trim(),
             };
-        setPrice(await api<PriceResult>(`/jobs/${job.jobId}/price`, { method: 'POST', token: job.token, body: JSON.stringify(body) }));
+        const result = await api<PriceResult>(`/jobs/${job.jobId}/price`, { method: 'POST', token: job.token, body: JSON.stringify(body) });
+        if (seq === priceSeq.current) setPrice(result);
       } catch (err: any) {
-        setError(err?.message ?? 'Could not compute the price');
-        setPrice(null);
+        if (seq === priceSeq.current) {
+          setError(err?.message ?? 'Could not compute the price');
+          setPrice(null);
+        }
       } finally {
-        setPricing(false);
+        if (seq === priceSeq.current) setPricing(false);
       }
     }, 320);
     return () => clearTimeout(handle);
