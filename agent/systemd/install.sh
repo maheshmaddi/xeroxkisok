@@ -13,7 +13,8 @@ APP_URL="${4:-https://app.example.in}"
 
 echo "==> Installing packages"
 apt-get update
-apt-get install -y cups cups-ipp-utils python3-venv python3-pip poppler-utils chromium-browser unclutter xinit
+apt-get install -y cups cups-ipp-utils python3-venv python3-pip poppler-utils chromium-browser unclutter xinit \
+  libcups2-dev python3-dev gcc # pycups builds from source on x86_64 and arm64 (Raspberry Pi) alike
 
 echo "==> Driverless IPP queue ($QUEUE → ipp://$PRINTER_IP)"
 lpadmin -p "$QUEUE" -E -v "ipp://$PRINTER_IP/ipp/print" -m everywhere
