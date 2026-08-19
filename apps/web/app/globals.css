@@ -1,3 +1,112 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --paper: #faf6ef;
+  --card: #ffffff;
+  --ink: #1c2434;
+  --line: #e6dfd2;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  overscroll-behavior-y: none;
+}
+
+::selection {
+  background: #2e4be6;
+  color: #fff;
+}
+
+/* Paper grain over everything — cheap, static, print-shop texture. */
+.grain::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  opacity: 0.55;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='linear' slope='0.055'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Fraunces at its softest, wonkiest — the display voice. */
+.font-display {
+  font-variation-settings: 'SOFT' 100, 'WONK' 1, 'opsz' 144;
+}
+
+/* Receipt dotted leaders between a label and its amount. */
+.dotfill {
+  flex: 1 1 auto;
+  border-bottom: 2px dotted var(--line);
+  margin: 0 0.4rem;
+  transform: translateY(-0.3rem);
+  min-width: 1.25rem;
+}
+
+/* Rubber stamp — for states, not decoration. */
+.stamp {
+  display: inline-block;
+  border: 3px solid currentColor;
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transform: rotate(-8deg);
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='r'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.6' numOctaves='2'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='discrete' tableValues='0 .5 1 1 1 1'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23r)' fill='%23000'/%3E%3C/svg%3E");
+  mask-size: 120px;
+}
+
+/* Perforated tear line for the receipt card bottom. */
+.tear {
+  height: 10px;
+  background:
+    radial-gradient(circle at 5px -4px, transparent 6px, var(--card) 6.5px) 0 0 / 14px 10px repeat-x;
+}
+
+/* Segmented control pill indicator. */
+.seg-pill {
+  transition: left 0.28s cubic-bezier(0.22, 1, 0.36, 1), width 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Stagger helpers for the load-in. */
+.stagger > * {
+  animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stagger > *:nth-child(1) { animation-delay: 0.03s; }
+.stagger > *:nth-child(2) { animation-delay: 0.1s; }
+.stagger > *:nth-child(3) { animation-delay: 0.17s; }
+.stagger > *:nth-child(4) { animation-delay: 0.24s; }
+.stagger > *:nth-child(5) { animation-delay: 0.31s; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Number input spinners off — steppers handle copies. */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Crop editor crosshair guides. */
+.crop-grid {
+  background-image:
+    linear-gradient(to right, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.55) calc(33.33% - 0.5px), rgba(255, 255, 255, 0.55) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px)),
+    linear-gradient(to right, transparent calc(66.66% - 0.5px), rgba(255, 255, 255, 0.55) calc(66.66% - 0.5px), rgba(255, 255, 255, 0.55) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.55) calc(33.33% - 0.5px), rgba(255, 255, 255, 0.55) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(66.66% - 0.5px), rgba(255, 255, 255, 0.55) calc(66.66% - 0.5px), rgba(255, 255, 255, 0.55) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px));
+}

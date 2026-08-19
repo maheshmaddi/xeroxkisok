@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { rupees, type PriceResult } from '@print-kiosk/shared';
+import Landing, { CmykDots } from './components/Landing';
+import Uploading from './components/Uploading';
+import DocumentSettings, { type DocSettings } from './components/DocumentSettings';
+import PhotoSettings, { type CropState, type PhotoMode } from './components/PhotoSettings';
+import OtpScreen from './components/OtpScreen';
+import { PayBar, Stepper } from './components/Chrome';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -19,14 +25,6 @@ interface JobRef {
   token: string;
 }
 
-interface Settings {
-  copies: number;
-  color: boolean;
-  duplex: boolean;
-  paperSize: 'A4' | 'A3';
-  pageRange: string;
-}
-
 interface JobStatus {
   jobId: string;
   state: string;
@@ -42,6 +40,7 @@ interface JobStatus {
 async function api<T>(path: string, init?: RequestInit & { token?: string }): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       ...(init?.body ? { 'content-type': 'application/json' } : {}),
       ...(init?.token ? { 'x-job-token': init.token } : {}),
@@ -62,10 +61,8 @@ function uploadWithProgress(url: string, file: File, onProgress: (fraction: numb
       if (e.lengthComputable) onProgress(e.loaded / e.total);
     };
     xhr.onload = () =>
-      xhr.status >= 200 && xhr.status < 300
-        ? resolve()
-        : reject(new Error(`Upload failed (${xhr.status})`));
-    xhr.onerror = () => reject(new Error('Network error during upload — check your connection and retry'));
+      xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`Upload failed (${xhr.status})`));
+    xhr.onerror = () => reject(new Error('Network error during upload — check your connection and try again'));
     xhr.send(file);
   });
 }
@@ -89,7 +86,6 @@ interface RazorpayCheckoutOptions {
 
 type RazorpayCtor = new (options: RazorpayCheckoutOptions) => { open: () => void };
 
-/** Loads https://checkout.razorpay.com/v1/checkout.js once; undefined on failure. */
 async function loadRazorpayCheckout(): Promise<RazorpayCtor | undefined> {
   const w = window as unknown as { Razorpay?: RazorpayCtor };
   if (w.Razorpay) return w.Razorpay;
@@ -110,20 +106,21 @@ export default function Page() {
   const [fileName, setFileName] = useState('');
   const [pages, setPages] = useState(0);
   const [progress, setProgress] = useState(0);
-  const [settings, setSettings] = useState<Settings>({ copies: 1, color: false, duplex: false, paperSize: 'A4', pageRange: '' });
   const [isImage, setIsImage] = useState(false);
-  const [photoMode, setPhotoMode] = useState<'photo4x6' | 'passport'>('photo4x6');
-  const [crop, setCrop] = useState({ zoom: 1, offsetX: 0.5, offsetY: 0.35 });
   const [photoSrc, setPhotoSrc] = useState<string | null>(null);
+
+  const [doc, setDoc] = useState<DocSettings>({ copies: 1, color: false, duplex: false, paperSize: 'A4', pageRange: '' });
+  const [photoMode, setPhotoMode] = useState<PhotoMode>('photo4x6');
+  const [crop, setCrop] = useState<CropState>({ zoom: 1, offsetX: 0.5, offsetY: 0.35 });
+
   const [price, setPrice] = useState<PriceResult | null>(null);
   const [pricing, setPricing] = useState(false);
   const [status, setStatus] = useState<JobStatus | null>(null);
   const [otp, setOtp] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Boot: read URL params (?kiosk=K001, or ?job=…&t=… to resume a job's status page)
+  // Boot: read ?kiosk= / resume via ?job=&t= (spec §6 recoverable link)
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     const kioskId = sp.get('kiosk') ?? 'K001';
@@ -135,7 +132,7 @@ export default function Page() {
         setKiosk(info);
         if (resumeJob && resumeToken) {
           setJob({ jobId: resumeJob, token: resumeToken });
-          setPhase('otp'); // spec §6: recoverable via link in the page URL
+          setPhase('otp');
         } else {
           setPhase('landing');
         }
@@ -146,40 +143,35 @@ export default function Page() {
       });
   }, []);
 
-  // Debounced server-side re-pricing whenever settings change (spec §5 rule 5)
+  // Debounced server-side re-pricing on every settings change (spec §5 rule 5)
   useEffect(() => {
     if (phase !== 'settings' || !job) return;
     const handle = setTimeout(async () => {
       setPricing(true);
       setError(null);
       try {
-        const printSettings = isImage
-          ? { mode: photoMode, copies: settings.copies, ...(photoMode === 'photo4x6' ? { crop } : {}) }
+        const body = isImage
+          ? { mode: photoMode, copies: doc.copies, ...(photoMode === 'photo4x6' ? { crop } : {}) }
           : {
               mode: 'document',
-              copies: settings.copies,
-              color: settings.color,
-              duplex: settings.duplex,
-              paperSize: settings.paperSize,
-              pageRange: settings.pageRange.trim() === '' ? null : settings.pageRange.trim(),
+              copies: doc.copies,
+              color: doc.color,
+              duplex: doc.duplex,
+              paperSize: doc.paperSize,
+              pageRange: doc.pageRange.trim() === '' ? null : doc.pageRange.trim(),
             };
-        const result = await api<PriceResult>(`/jobs/${job.jobId}/price`, {
-          method: 'POST',
-          token: job.token,
-          body: JSON.stringify(printSettings),
-        });
-        setPrice(result);
+        setPrice(await api<PriceResult>(`/jobs/${job.jobId}/price`, { method: 'POST', token: job.token, body: JSON.stringify(body) }));
       } catch (err: any) {
-        setError(err?.message ?? 'Could not compute price');
+        setError(err?.message ?? 'Could not compute the price');
         setPrice(null);
       } finally {
         setPricing(false);
       }
-    }, 350);
+    }, 320);
     return () => clearTimeout(handle);
-  }, [phase, job, settings, isImage, photoMode, crop]);
+  }, [phase, job, doc, isImage, photoMode, crop]);
 
-  // Poll job status on the OTP screen (also resumes after a page reload)
+  // Poll status on the OTP screen (also resumes after reload)
   useEffect(() => {
     if (phase !== 'otp' || !job) return;
     let cancelled = false;
@@ -209,7 +201,7 @@ export default function Page() {
     async (file: File) => {
       setError(null);
       if (file.size > MAX_FILE_BYTES) {
-        setError('That file is larger than 50MB.');
+        setError('That file is larger than 50MB — pick a smaller one.');
         return;
       }
       setFileName(file.name);
@@ -226,13 +218,9 @@ export default function Page() {
         if (!token) throw new Error('Upload link was malformed');
 
         await uploadWithProgress(created.upload.url, file, setProgress);
+        const processed = await api<{ pages: number }>(`/jobs/${created.jobId}/process`, { method: 'POST', token });
 
-        const processed = await api<{ pages: number }>(`/jobs/${created.jobId}/process`, {
-          method: 'POST',
-          token,
-        });
-
-        // Put the job identity in the URL so a refresh/reopen can recover it (spec §6)
+        // Job identity in the URL: reopening this link recovers the status page.
         const sp = new URLSearchParams(window.location.search);
         sp.set('job', created.jobId);
         sp.set('t', token);
@@ -242,7 +230,7 @@ export default function Page() {
         setPages(processed.pages);
         setPhase('settings');
       } catch (err: any) {
-        setError(err?.message ?? 'Upload failed');
+        setError(err?.message ?? 'Upload failed — please try again');
         setPhase('landing');
       }
     },
@@ -260,7 +248,7 @@ export default function Page() {
       if (res.mode === 'razorpay' && res.orderId && res.keyId && typeof res.amountPaise === 'number') {
         const RazorpayCtor = await loadRazorpayCheckout();
         if (!RazorpayCtor) {
-          setError('Could not load the payment window. Check your connection and retry.');
+          setError('Could not load the payment window — check your connection and retry.');
           return;
         }
         const rzp = new RazorpayCtor({
@@ -270,7 +258,7 @@ export default function Page() {
           currency: 'INR',
           name: 'Print Kiosk',
           description: fileName,
-          theme: { color: '#4f46e5' },
+          theme: { color: '#1C2434' },
           handler: (response) => {
             // Localhost can't receive webhooks — confirm the checkout
             // signature directly; webhooks remain the production safety net.
@@ -294,328 +282,129 @@ export default function Page() {
         });
         rzp.open();
       } else {
-        // Phase 1 mock pay — capture already happened server-side.
-        setPhase('otp');
+        setPhase('otp'); // mock pay captured server-side
       }
     } catch (err: any) {
       setError(err?.message ?? 'Payment failed');
     }
   }, [job, fileName]);
 
-  const kioskUnavailable = kiosk && kiosk.status !== 'ONLINE';
+  const reset = useCallback(() => {
+    const sp = new URLSearchParams(window.location.search);
+    sp.delete('job');
+    sp.delete('t');
+    window.history.replaceState(null, '', `?${sp.toString()}`);
+    setJob(null);
+    setStatus(null);
+    setOtp(null);
+    setPrice(null);
+    setPages(0);
+    setFileName('');
+    setPhotoSrc(null);
+    setDoc({ copies: 1, color: false, duplex: false, paperSize: 'A4', pageRange: '' });
+    setCrop({ zoom: 1, offsetX: 0.5, offsetY: 0.35 });
+    setPhase('landing');
+  }, []);
+
+  const stepIndex = phase === 'loading' || phase === 'landing' || phase === 'uploading' ? 0 : phase === 'settings' ? 1 : 2;
+  const terminal = status && ['COMPLETED', 'FAILED', 'REFUNDED', 'EXPIRED'].includes(status.state);
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 pb-10 pt-6">
-      <header className="mb-6">
-        <div className="text-xs font-semibold uppercase tracking-widest text-indigo-600">Print Kiosk</div>
-        <h1 className="mt-1 text-xl font-bold">{kiosk?.name ?? '…'}</h1>
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 pb-3 pt-5">
+      {/* Chrome */}
+      <header className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CmykDots className="gap-[3px]" />
+          <span className="font-display text-lg font-semibold tracking-tight">PrintKiosk</span>
+        </div>
         {kiosk && (
-          <div className={`mt-1 text-sm ${kiosk.status === 'ONLINE' ? 'text-emerald-600' : 'text-slate-500'}`}>
-            {kiosk.status === 'ONLINE' ? '● Online' : `● ${kiosk.status.toLowerCase()}`}
-          </div>
+          <span className="flex items-center gap-1.5 rounded-full border border-line bg-card px-2.5 py-1 text-[11px] font-bold text-inksoft">
+            <span className={`h-1.5 w-1.5 rounded-full ${kiosk.status === 'ONLINE' ? 'bg-leaf' : 'bg-stamp'}`} />
+            {kiosk.id}
+          </span>
         )}
       </header>
+      {!terminal && (
+        <div className="mb-5 px-2">
+          <Stepper current={stepIndex} />
+        </div>
+      )}
 
       {error && (
-        <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <div className="mb-4 flex items-start gap-2.5 rounded-2xl border border-stamp/30 bg-stamp/[0.07] px-4 py-3 text-sm text-stamp">
+          <svg viewBox="0 0 24 24" className="mt-0.5 h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 8v4m0 4h.01" />
+          </svg>
           {error}
         </div>
       )}
 
-      {phase === 'loading' && <p className="text-slate-500">Loading…</p>}
-
-      {phase === 'landing' && (
-        <section className="rounded-2xl bg-white p-5 shadow-sm">
-          {kioskUnavailable ? (
-            <>
-              <h2 className="text-lg font-semibold">This kiosk is temporarily unavailable</h2>
-              <p className="mt-2 text-sm text-slate-600">Please try again in a few minutes.</p>
-            </>
-          ) : (
-            <>
-              <h2 className="text-lg font-semibold">Print from your phone</h2>
-              <p className="mt-2 text-sm text-slate-600">
-                PDF, DOCX, JPG or PNG up to 50MB. Pay securely, get a 4-digit code, type it on the kiosk keypad and
-                collect your prints. Files are deleted right after printing.
-              </p>
-              <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm">
-                <div className="flex justify-between"><span>B&W A4</span><span>₹2 / side</span></div>
-                <div className="mt-1 flex justify-between"><span>Color A4</span><span>₹8 / side</span></div>
-                <div className="mt-1 flex justify-between text-slate-500"><span>B&W A3</span><span>₹4 / side</span></div>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf,.docx,.jpg,.jpeg,.png,application/pdf"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void startUpload(f);
-                  e.target.value = '';
-                }}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="mt-5 w-full rounded-xl bg-indigo-600 py-3.5 text-base font-semibold text-white shadow-sm active:bg-indigo-700"
-              >
-                Upload to print
-              </button>
-            </>
-          )}
-        </section>
-      )}
-
-      {phase === 'uploading' && (
-        <section className="rounded-2xl bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold">Uploading {fileName}</h2>
-          <div className="mt-4 h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
-            <div className="h-full rounded-full bg-indigo-600 transition-all" style={{ width: `${Math.round(progress * 100)}%` }} />
-          </div>
-          <p className="mt-2 text-sm text-slate-500">{Math.round(progress * 100)}% — keep this page open</p>
-        </section>
-      )}
-
-      {phase === 'settings' && (
-        <section className="space-y-4">
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h2 className="max-w-[70%] truncate text-lg font-semibold">{fileName}</h2>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium">
-                {isImage ? 'Photo' : `${pages} pages`}
-              </span>
-            </div>
-
-            <label className="mt-4 block text-sm font-medium text-slate-700">Copies (1–50)</label>
-            <div className="mt-1 flex items-center gap-3">
-              <button className="h-10 w-10 rounded-xl bg-slate-100 text-lg font-bold" onClick={() => setSettings((s) => ({ ...s, copies: Math.max(1, s.copies - 1) }))}>−</button>
-              <input
-                className="h-10 w-16 rounded-xl border border-slate-300 text-center text-base font-semibold"
-                type="number" min={1} max={50} value={settings.copies}
-                onChange={(e) => setSettings((s) => ({ ...s, copies: Math.min(50, Math.max(1, Number(e.target.value) || 1)) }))}
-              />
-              <button className="h-10 w-10 rounded-xl bg-slate-100 text-lg font-bold" onClick={() => setSettings((s) => ({ ...s, copies: Math.min(50, s.copies + 1) }))}>+</button>
-            </div>
-
-            {isImage ? (
-              <div className="mt-4 space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <Toggle label="4×6 photo" active={photoMode === 'photo4x6'} onClick={() => setPhotoMode('photo4x6')} />
-                  <Toggle label="Passport ×8" active={photoMode === 'passport'} onClick={() => setPhotoMode('passport')} />
-                </div>
-                {photoMode === 'passport' && (
-                  <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
-                    One 4×6 sheet with 8 passport photos (35×45mm each) on a white grid — cut them apart at home.
-                  </p>
-                )}
-                {photoMode === 'photo4x6' && photoSrc && (
-                  <CropEditor src={photoSrc} crop={crop} onChange={setCrop} />
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <Toggle label="Color" active={settings.color} onClick={() => setSettings((s) => ({ ...s, color: !s.color }))} />
-                  <Toggle label="Duplex" active={settings.duplex} onClick={() => setSettings((s) => ({ ...s, duplex: !s.duplex }))} />
-                  <Toggle label="A4" active={settings.paperSize === 'A4'} onClick={() => setSettings((s) => ({ ...s, paperSize: 'A4' }))} />
-                  <Toggle label="A3" active={settings.paperSize === 'A3'} onClick={() => setSettings((s) => ({ ...s, paperSize: 'A3' }))} />
-                </div>
-
-                <label className="mt-4 block text-sm font-medium text-slate-700">Pages (blank = all)</label>
-                <input
-                  className="mt-1 h-11 w-full rounded-xl border border-slate-300 px-3 text-base"
-                  placeholder="e.g. 1-3,7" value={settings.pageRange}
-                  onChange={(e) => setSettings((s) => ({ ...s, pageRange: e.target.value }))}
-                />
-              </>
-            )}
-          </div>
-
-          <div className="rounded-2xl bg-white p-5 shadow-sm">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Live price</h3>
-            {price ? (
-              <>
-                {price.lines.map((line) => (
-                  <div key={line.label} className="mt-2">
-                    <div className="text-sm text-slate-700">{line.label}</div>
-                    <div className="text-sm text-slate-500">{rupees(line.unitPaise)} × {line.qty} side(s)</div>
-                  </div>
-                ))}
-                <div className="mt-3 flex items-baseline justify-between border-t border-slate-100 pt-3">
-                  <span className="font-semibold">Total</span>
-                  <span className={`text-2xl font-bold ${pricing ? 'opacity-50' : ''}`}>{rupees(price.totalPaise)}</span>
-                </div>
-              </>
-            ) : (
-              <p className="mt-2 text-sm text-slate-500">{pricing ? 'Computing…' : 'Set your options to see the price.'}</p>
-            )}
-            <button
-              onClick={() => void pay()}
-              disabled={!price || pricing}
-              className="mt-4 w-full rounded-xl bg-indigo-600 py-3.5 text-base font-semibold text-white shadow-sm active:bg-indigo-700 disabled:bg-slate-300"
-            >
-              Pay {price ? rupees(price.totalPaise) : ''} (mock — Phase 1)
-            </button>
-            <p className="mt-2 text-center text-xs text-slate-400">UPI checkout via Razorpay arrives in Phase 2</p>
-          </div>
-        </section>
-      )}
-
-      {phase === 'otp' && <OtpScreen status={status} otp={otp} now={now} />}
-    </main>
-  );
-}
-
-function Toggle({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`h-11 rounded-xl border text-sm font-semibold transition-colors ${
-        active ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-300 bg-white text-slate-600'
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
-interface CropState {
-  zoom: number;
-  offsetX: number;
-  offsetY: number;
-}
-
-/** 2:3 crop frame with pinch-free zoom slider and drag-to-pan (4×6 preview). */
-function CropEditor({ src, crop, onChange }: { src: string; crop: CropState; onChange: (c: CropState) => void }) {
-  const frameRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
-
-  const panFraction = Math.max(0, 1 - 1 / crop.zoom); // total pannable range
-
-  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    dragRef.current = { x: e.clientX, y: e.clientY, ox: crop.offsetX, oy: crop.offsetY };
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    const drag = dragRef.current;
-    const frame = frameRef.current;
-    if (!drag || !frame || panFraction === 0) return;
-    const dx = ((e.clientX - drag.x) / frame.clientWidth) / panFraction;
-    const dy = ((e.clientY - drag.y) / frame.clientHeight) / panFraction;
-    onChange({ ...crop, offsetX: clamp01(drag.ox - dx), offsetY: clamp01(drag.oy - dy) });
-  };
-
-  const onPointerUp = () => {
-    dragRef.current = null;
-  };
-
-  const tx = (crop.offsetX - 0.5) * panFraction * -100;
-  const ty = (crop.offsetY - 0.5) * panFraction * -100;
-
-  return (
-    <div>
-      <div
-        ref={frameRef}
-        className="relative aspect-[2/3] w-full max-w-[240px] mx-auto touch-none select-none overflow-hidden rounded-2xl border border-slate-200"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        style={{ cursor: panFraction > 0 ? 'grab' : 'default' }}
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={src}
-          alt="Crop preview"
-          draggable={false}
-          className="h-full w-full object-cover"
-          style={{ transform: `scale(${crop.zoom}) translate(${tx}%, ${ty}%)` }}
-        />
-      </div>
-      <label className="mt-3 block text-center text-sm font-medium text-slate-700">
-        Zoom
-        <input
-          type="range" min={1} max={3} step={0.05} value={crop.zoom}
-          onChange={(e) => onChange({ ...crop, zoom: Number(e.target.value) })}
-          className="mt-1 w-full"
-        />
-      </label>
-      <p className="text-center text-xs text-slate-400">Drag the photo to position it on the 4×6 print</p>
-    </div>
-  );
-}
-
-function OtpScreen({ status, otp, now }: { status: JobStatus | null; otp: string | null; now: number }) {
-  const state = status?.state;
-  const remainingMs = status?.otpExpiresAt ? new Date(status.otpExpiresAt).getTime() - now : 0;
-  const remainingMin = Math.max(0, Math.floor(remainingMs / 60000));
-  const remainingSec = Math.max(0, Math.floor((remainingMs % 60000) / 1000));
-
-  if (state === 'COMPLETED') {
-    return (
-      <section className="rounded-2xl bg-white p-6 text-center shadow-sm">
-        <div className="text-5xl">🎉</div>
-        <h2 className="mt-3 text-xl font-bold">Done! Collect your prints</h2>
-        <p className="mt-2 text-sm text-slate-500">Your file has been deleted from our servers.</p>
-      </section>
-    );
-  }
-
-  if (state === 'FAILED' || state === 'EXPIRED') {
-    return (
-      <section className="rounded-2xl bg-white p-6 text-center shadow-sm">
-        <div className="text-4xl">{state === 'FAILED' ? '⚠️' : '⌛'}</div>
-        <h2 className="mt-3 text-lg font-bold">{state === 'FAILED' ? 'Printing failed' : 'Code expired'}</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          {state === 'FAILED'
-            ? 'Your payment has been refunded automatically — the amount returns in 3–5 days.'
-            : 'The 30-minute collection window passed. Your payment has been refunded automatically.'}
-        </p>
-        {status?.failReason && <p className="mt-2 text-xs text-slate-400">Reason: {status.failReason}</p>}
-      </section>
-    );
-  }
-
-  if (status?.otpLocked) {
-    return (
-      <section className="rounded-2xl bg-white p-6 text-center shadow-sm">
-        <div className="text-4xl">🔒</div>
-        <h2 className="mt-3 text-lg font-bold">Too many wrong attempts</h2>
-        <p className="mt-2 text-sm text-slate-600">The job is locked. Please contact support for help.</p>
-      </section>
-    );
-  }
-
-  return (
-    <section className="rounded-2xl bg-white p-6 text-center shadow-sm">
-      {state === 'PRINTING' ? (
-        <>
-          <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />
-          <h2 className="mt-4 text-lg font-bold">Printing…</h2>
-          <p className="mt-1 text-sm text-slate-500">Collect your prints from the tray below the screen.</p>
-        </>
-      ) : (
-        <>
-          <h2 className="text-lg font-bold">Enter this code on the kiosk keypad</h2>
-          <div className="mt-5 flex justify-center gap-3">
-            {(otp ?? '••••').split('').map((digit, i) => (
-              <div key={i} className="flex h-16 items-center justify-center rounded-2xl bg-indigo-50 text-3xl font-bold text-indigo-700" style={{ width: '3.25rem' }}>
-                {digit}
-              </div>
+      {phase === 'loading' && (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="flex gap-1.5">
+            {[0, 1, 2, 3].map((i) => (
+              <span key={i} className="h-2.5 w-2.5 animate-breathe rounded-full bg-ink/30" style={{ animationDelay: `${i * 150}ms` }} />
             ))}
           </div>
-          <p className="mt-4 text-sm text-slate-500">
-            {otp ? (
-              <>Expires in <span className="font-semibold text-slate-700 tabular-nums">{remainingMin}:{String(remainingSec).padStart(2, '0')}</span></>
-            ) : (
-              'Retrieving your code…'
-            )}
-          </p>
-          <p className="mt-1 text-xs text-slate-400">Waiting for the kiosk — keep this page open.</p>
-        </>
+        </div>
       )}
-    </section>
+
+      {phase === 'landing' && <Landing kiosk={kiosk} onPick={(f) => void startUpload(f)} busy={false} />}
+      {phase === 'uploading' && <Uploading fileName={fileName} progress={progress} />}
+
+      {phase === 'settings' && job && (
+        <div className="flex flex-1 flex-col">
+          <div className="mb-4 flex items-center justify-between rounded-2xl border border-line bg-card px-4 py-3 shadow-sheet">
+            <div className="min-w-0">
+              <p className="truncate text-[15px] font-semibold">{fileName}</p>
+              <p className="text-xs text-inksoft">
+                {isImage ? 'Photo' : `${pages} page${pages > 1 ? 's' : ''} detected`}
+              </p>
+            </div>
+            <span className="font-display shrink-0 text-2xl font-semibold text-accent">
+              {isImage ? '4×6' : pages > 0 ? `p.${pages}` : ''}
+            </span>
+          </div>
+
+          {isImage ? (
+            <PhotoSettings
+              mode={photoMode}
+              onMode={setPhotoMode}
+              copies={doc.copies}
+              onCopies={(n) => setDoc((s) => ({ ...s, copies: n }))}
+              crop={crop}
+              onCrop={setCrop}
+              photoSrc={photoSrc}
+            />
+          ) : (
+            <DocumentSettings settings={doc} onChange={setDoc} pages={pages} />
+          )}
+
+          {/* live receipt */}
+          {price && (
+            <div className="mt-5 rounded-2xl border border-line bg-card px-4 py-3 shadow-sheet">
+              {price.lines.map((line) => (
+                <div key={line.label} className="flex items-end text-sm">
+                  <span className="max-w-[70%]">{line.label}</span>
+                  <span className="dotfill" aria-hidden />
+                  <span className="font-display font-semibold">{rupees(line.totalPaise)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex-1" />
+          <PayBar
+            totalPaise={price?.totalPaise ?? null}
+            busy={pricing}
+            disabled={!price}
+            onPay={() => void pay()}
+          />
+        </div>
+      )}
+
+      {phase === 'otp' && <OtpScreen status={status} otp={otp} now={now} onReset={reset} />}
+    </main>
   );
 }
